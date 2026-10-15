@@ -4,232 +4,705 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RepoBrain</title>
-<script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<meta name="description" content="An engineering agent that reasons over a FalkorDB graph of your repo: code, history, people and its own memory.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M9 10 22 8 16 23Z' fill='none' stroke='%23394150' stroke-width='2'/%3E%3Ccircle cx='9' cy='10' r='4' fill='%2360a5fa'/%3E%3Ccircle cx='22' cy='8' r='3.5' fill='%23f59e0b'/%3E%3Ccircle cx='16' cy='23' r='4.5' fill='%2334d399'/%3E%3C/svg%3E">
 <style>
-  :root { --bg:#0f1117; --panel:#161a23; --line:#262b38; --text:#d6dae5; --muted:#7d8597; --accent:#7aa2f7; --warn:#e0af68; }
+  :root {
+    --bg: #08090b; --panel: #0e1014; --panel-2: #14171c; --raise: #1a1e25;
+    --line: #1d2128; --line-2: #2a303a;
+    --text: #e8eaee; --text-2: #aab1bd; --muted: #6f7785;
+    --accent: #2dd4bf; --accent-ink: #04201c;
+    --ok: #34d399; --warn: #f59e0b; --bad: #f43f5e;
+    --radius: 10px; --radius-sm: 6px;
+    --ease: cubic-bezier(.2, .8, .2, 1);
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
   * { box-sizing: border-box; }
-  body { margin:0; height:100vh; display:flex; flex-direction:column; background:var(--bg); color:var(--text); font:14px/1.5 system-ui, sans-serif; }
-  header { display:flex; gap:12px; align-items:center; padding:10px 16px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
-  header h1 { font-size:16px; margin:0 8px 0 0; } header h1 span { color:var(--accent); }
-  input, select, button, textarea { font:inherit; color:var(--text); background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:6px 10px; }
-  button { cursor:pointer; } button.primary { background:var(--accent); color:#0f1117; border:none; font-weight:600; }
-  button:disabled { opacity:.5; cursor:wait; }
-  .muted { color:var(--muted); font-size:12px; }
-  main { flex:1; display:grid; grid-template-columns:minmax(360px, 44%) 1fr; min-height:0; }
-  #left { display:flex; flex-direction:column; border-right:1px solid var(--line); min-height:0; }
-  .tabs { display:flex; border-bottom:1px solid var(--line); } .tabs button { border:none; border-radius:0; background:none; padding:10px 16px; color:var(--muted); }
-  .tabs button.on { color:var(--text); box-shadow:inset 0 -2px var(--accent); }
-  .pane { flex:1; display:flex; flex-direction:column; min-height:0; } .pane[hidden] { display:none; }
-  #log, #reviewOut { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:12px; }
-  .msg { padding:10px 14px; border-radius:8px; max-width:100%; overflow-wrap:anywhere; }
-  .user { align-self:flex-end; background:#22304d; }
-  .bot { background:var(--panel); border:1px solid var(--line); cursor:pointer; }
-  .bot.active { border-color:var(--accent); }
-  .bot p:first-child { margin-top:0; } .bot p:last-child { margin-bottom:0; }
-  .bot code { background:#0b0d12; padding:1px 4px; border-radius:4px; font-size:12.5px; }
-  details { margin-top:8px; } summary { color:var(--muted); font-size:12px; cursor:pointer; }
-  .step { margin:8px 0; font-size:12px; } .step b { color:var(--accent); }
-  pre { background:#0b0d12; padding:8px; border-radius:6px; overflow-x:auto; white-space:pre-wrap; font-size:11.5px; margin:4px 0; }
-  pre.res { color:var(--muted); max-height:180px; overflow-y:auto; }
-  .chips { display:flex; gap:6px; flex-wrap:wrap; padding:0 16px 8px; }
-  .chips button { font-size:12px; padding:4px 10px; border-radius:999px; }
-  form.ask { display:flex; gap:8px; padding:12px 16px; border-top:1px solid var(--line); }
-  form.ask textarea { flex:1; resize:none; height:42px; }
-  .agent { border-left:3px solid var(--accent); } .agent h3 { margin:0 0 6px; font-size:13px; text-transform:uppercase; letter-spacing:.05em; color:var(--accent); }
-  .fact { cursor:default; margin-bottom:10px; } .fact .muted { margin-top:6px; }
-  .badge { font-size:11px; padding:1px 7px; border-radius:999px; background:#1f3a2e; color:#9ece6a; }
-  .badge.stale { background:#3d2a1a; color:var(--warn); }
-  #right { position:relative; min-height:0; } #graph { position:absolute; inset:0; }
-  #legend { position:absolute; left:12px; bottom:12px; display:flex; gap:10px; flex-wrap:wrap; font-size:12px; background:#0f1117cc; padding:6px 10px; border-radius:6px; }
-  #legend i { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:4px; vertical-align:-1px; }
-  #graphTitle { position:absolute; left:12px; top:10px; font-size:12px; color:var(--muted); }
-  @media (max-width: 800px) { main { grid-template-columns:1fr; grid-template-rows:60vh 40vh; } #left { border-right:none; } }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.55 Inter, system-ui, sans-serif;
+         -webkit-font-smoothing: antialiased; display: flex; flex-direction: column; overflow: hidden; }
+  button, input, select, textarea { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--radius-sm); }
+  .i { width: 16px; height: 16px; flex: none; }
+  .muted { color: var(--muted); }
+  code, .mono { font-family: var(--mono); font-size: 12.5px; }
+  a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+
+  /* ---- top bar ---- */
+  .topbar { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line);
+            background: linear-gradient(180deg, #0c0e11, var(--bg)); flex-wrap: wrap; position: relative; z-index: 2; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: -.01em; font-size: 15px; margin-right: 6px; }
+  .brand svg { width: 26px; height: 26px; }
+  .brand small { font-weight: 500; color: var(--muted); font-size: 12px; padding: 2px 8px; border: 1px solid var(--line-2); border-radius: 999px; }
+  .field { display: flex; align-items: center; gap: 8px; background: var(--panel-2); border: 1px solid var(--line-2);
+           border-radius: var(--radius-sm); padding: 0 10px; height: 34px; transition: border-color .15s; }
+  .field:focus-within { border-color: var(--accent); }
+  .field > span { white-space: nowrap; }
+  .field input, .field select { background: none; border: 0; outline: 0; height: 100%; min-width: 0; }
+  .field select { padding-right: 4px; cursor: pointer; }
+  .field select option { background: var(--panel-2); }
+  .btn { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px; border-radius: var(--radius-sm);
+         border: 1px solid var(--line-2); background: var(--panel-2); color: var(--text); font-weight: 500;
+         transition: background .15s, border-color .15s, transform .1s; white-space: nowrap; }
+  .btn:hover { background: var(--raise); border-color: #39404c; }
+  .btn:active { transform: translateY(1px); }
+  .btn.primary { background: var(--text); color: #0b0c0f; border-color: var(--text); }
+  .btn.primary:hover { background: #fff; }
+  .btn.sm { height: 28px; padding: 0 9px; font-size: 12.5px; }
+  .btn:disabled { opacity: .5; cursor: progress; }
+  .status { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-2); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 0 0 rgba(52, 211, 153, .6); animation: pulse 2.4s infinite; }
+  .dot.busy { background: var(--warn); animation: pulse-warn 1.2s infinite; }
+  .dot.bad { background: var(--bad); }
+  .spacer { flex: 1; }
+  .session { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
+  .session code { color: var(--text-2); }
+
+  /* ---- layout ---- */
+  .layout { flex: 1; display: grid; grid-template-columns: minmax(380px, 44%) 1fr; min-height: 0; }
+  .left { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); background: var(--panel); }
+  .tabs { position: relative; display: flex; gap: 4px; padding: 8px 12px 0; border-bottom: 1px solid var(--line); }
+  .tabs button { background: none; border: 0; padding: 8px 12px 10px; color: var(--muted); font-weight: 500; display: inline-flex; gap: 7px; align-items: center; transition: color .15s; }
+  .tabs button:hover, .tabs button[aria-selected="true"] { color: var(--text); }
+  .tab-ink { position: absolute; bottom: -1px; height: 2px; background: var(--accent); border-radius: 2px; transition: transform .3s var(--ease), width .3s var(--ease); }
+  .pane { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .pane[hidden] { display: none; }
+  .scroll { flex: 1; overflow-y: auto; padding: 20px; scroll-behavior: smooth; }
+  .scroll::-webkit-scrollbar, .graph-panel ::-webkit-scrollbar { width: 10px; }
+  .scroll::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 10px; border: 3px solid var(--panel); }
+
+  /* ---- empty state ---- */
+  .empty { max-width: 520px; margin: 6vh auto 0; text-align: center; animation: rise .5s var(--ease) both; }
+  .empty h2 { font-size: 22px; letter-spacing: -.02em; margin: 14px 0 6px; }
+  .empty p { color: var(--text-2); margin: 0 0 22px; }
+  .stats { display: flex; justify-content: center; gap: 18px; flex-wrap: wrap; margin-bottom: 26px; }
+  .stat b { display: block; font-size: 20px; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+  .stat span { font-size: 12px; color: var(--muted); }
+  .suggest { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; text-align: left; }
+  .suggest button { text-align: left; display: flex; gap: 10px; align-items: flex-start; padding: 12px; border-radius: var(--radius); border: 1px solid var(--line);
+                    background: var(--panel-2); color: var(--text-2); font-size: 13px; line-height: 1.4; transition: border-color .15s, color .15s, transform .15s; }
+  .suggest button:hover { border-color: var(--line-2); color: var(--text); transform: translateY(-1px); }
+  .suggest button .i { margin-top: 1px; color: var(--accent); }
+
+  /* ---- messages ---- */
+  .msg { margin-bottom: 18px; animation: rise .3s var(--ease) both; }
+  .msg.user { display: flex; justify-content: flex-end; }
+  .msg.user div { background: var(--raise); border: 1px solid var(--line-2); padding: 9px 14px; border-radius: 14px 14px 4px 14px; max-width: 85%; overflow-wrap: anywhere; }
+  .msg.bot { border: 1px solid transparent; border-radius: var(--radius); padding: 2px 4px 2px 0; transition: border-color .2s, background .2s; }
+  .msg.bot.active { }
+  .who { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13px; margin-bottom: 8px; }
+  .who svg { width: 20px; height: 20px; }
+  .who .meta { font-weight: 400; color: var(--muted); font-size: 12px; margin-left: auto; font-variant-numeric: tabular-nums; }
+  .answer { overflow-wrap: anywhere; animation: fade .4s var(--ease) both; }
+  .answer > :first-child { margin-top: 0; } .answer > :last-child { margin-bottom: 0; }
+  .answer p, .answer ul, .answer ol { margin: 0 0 10px; }
+  .answer ul, .answer ol { padding-left: 20px; } .answer li { margin: 3px 0; }
+  .answer h1, .answer h2, .answer h3, .answer h4 { font-size: 14px; margin: 14px 0 6px; letter-spacing: -.01em; }
+  .answer code { background: var(--panel-2); border: 1px solid var(--line); padding: 1px 5px; border-radius: 4px; }
+  .answer table { border-collapse: collapse; width: 100%; font-size: 13px; margin: 8px 0 12px; display: block; overflow-x: auto; }
+  .answer th, .answer td { border: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; }
+  .answer th { background: var(--panel-2); font-weight: 600; }
+  .answer hr { border: 0; border-top: 1px solid var(--line); }
+  a.cite { color: var(--text); background: rgba(45, 212, 191, .1); border: 1px solid rgba(45, 212, 191, .25); padding: 0 5px; border-radius: 4px; white-space: nowrap; transition: background .15s; }
+  a.cite:hover { background: rgba(45, 212, 191, .22); text-decoration: none; }
+
+  /* ---- live trace ---- */
+  .trace { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 9px; border-radius: 999px; border: 1px solid var(--line-2);
+          background: var(--panel-2); font-size: 12px; color: var(--text-2); max-width: 100%; animation: pop .35s var(--ease) both; }
+  .chip b { color: var(--text); font-weight: 500; }
+  .chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11.5px; }
+  .chip .i { width: 13px; height: 13px; color: var(--accent); }
+  .chip.err .i { color: var(--bad); }
+  .thinking { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+  .thinking .shimmer { background: linear-gradient(90deg, var(--muted) 20%, var(--text) 50%, var(--muted) 80%); background-size: 200% 100%;
+                       -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 1.4s linear infinite; }
+  .spin { width: 14px; height: 14px; border: 2px solid var(--line-2); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; flex: none; }
+  details.cy { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 8px; }
+  details.cy summary { cursor: pointer; color: var(--muted); font-size: 12px; list-style: none; display: flex; gap: 6px; align-items: center; }
+  details.cy summary::before { content: "›"; transition: transform .2s; display: inline-block; }
+  details.cy[open] summary::before { transform: rotate(90deg); }
+  .step { margin-top: 10px; font-size: 12px; animation: fade .25s both; }
+  .step-h { color: var(--text-2); margin-bottom: 4px; } .step-h b { color: var(--accent); font-weight: 500; font-family: var(--mono); }
+  pre { margin: 0 0 6px; background: #0a0c0f; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 9px 11px;
+        overflow-x: auto; white-space: pre-wrap; font: 11.5px/1.55 var(--mono); color: #c9d1dc; }
+  pre.res { color: var(--muted); max-height: 160px; overflow-y: auto; }
+  .kw { color: #7dd3fc; } .lbl { color: #fbbf24; } .str { color: #86efac; }
+
+  /* ---- composer ---- */
+  .composer { padding: 12px 16px 14px; border-top: 1px solid var(--line); background: var(--panel); }
+  .composer .box { display: flex; align-items: flex-end; gap: 8px; background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 12px; padding: 8px 8px 8px 14px; transition: border-color .15s, box-shadow .15s; }
+  .composer .box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(45, 212, 191, .12); }
+  .composer textarea { flex: 1; resize: none; background: none; border: 0; outline: 0; max-height: 160px; min-height: 22px; padding: 5px 0; line-height: 1.5; }
+  .send { width: 34px; height: 34px; border-radius: 9px; border: 0; background: var(--text); color: #0b0c0f; display: grid; place-items: center; transition: transform .1s, opacity .15s; }
+  .send:disabled { opacity: .35; cursor: default; }
+  .send:not(:disabled):active { transform: scale(.94); }
+  .hint { font-size: 11.5px; color: var(--muted); margin-top: 6px; display: flex; gap: 12px; }
+  kbd { font-family: var(--mono); font-size: 10.5px; border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; color: var(--text-2); }
+
+  /* ---- review ---- */
+  .review-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+  .prs { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 18px; }
+  .prs button { display: flex; gap: 10px; align-items: center; text-align: left; background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius-sm);
+                padding: 9px 11px; color: var(--text-2); transition: border-color .15s, color .15s; animation: rise .3s var(--ease) both; }
+  .prs button:hover { border-color: var(--line-2); color: var(--text); }
+  .prs .num { font-family: var(--mono); color: var(--warn); font-size: 12px; min-width: 52px; }
+  .pipeline { position: relative; display: flex; flex-direction: column; gap: 10px; }
+  .stage { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel-2); padding: 12px 14px; transition: border-color .3s, opacity .3s; animation: rise .35s var(--ease) both; }
+  .stage.waiting { opacity: .55; }
+  .stage.running { border-color: rgba(45, 212, 191, .5); box-shadow: 0 0 0 3px rgba(45, 212, 191, .07); }
+  .stage-h { display: flex; align-items: center; gap: 10px; }
+  .stage-h .n { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 11.5px; font-weight: 600; background: var(--raise); border: 1px solid var(--line-2); flex: none; }
+  .stage.done .stage-h .n { background: var(--ok); color: #04150e; border-color: var(--ok); }
+  .stage-h b { font-size: 13.5px; } .stage-h small { color: var(--muted); font-size: 12px; }
+  .stage-h .state { margin-left: auto; font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+  .stage .trace { margin: 10px 0 0; }
+  .stage .note { margin-top: 10px; font-size: 13px; color: var(--text-2); max-height: 120px; overflow: hidden; position: relative; transition: max-height .35s var(--ease); }
+  .stage .note::after { content: ""; position: absolute; inset: auto 0 0; height: 40px; background: linear-gradient(transparent, var(--panel-2)); }
+  .stage .note.open { max-height: 2000px; } .stage .note.open::after { display: none; }
+  .final { margin-top: 16px; border: 1px solid var(--line-2); border-radius: var(--radius); overflow: hidden; animation: rise .4s var(--ease) both; }
+  .final-h { display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: var(--raise); border-bottom: 1px solid var(--line-2); font-size: 13px; font-weight: 600; }
+  .final-h .btn { margin-left: auto; }
+  .final .answer { padding: 14px; }
+  .changed { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 14px; }
+  details.post { font-size: 12.5px; color: var(--muted); }
+  details.post summary { cursor: pointer; }
+  details.post div { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+
+  /* ---- memory ---- */
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 16px; }
+  .tile { background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; animation: rise .3s var(--ease) both; }
+  .tile b { display: block; font-size: 20px; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+  .tile span { font-size: 12px; color: var(--muted); }
+  .fact { border: 1px solid var(--line); background: var(--panel-2); border-radius: var(--radius); padding: 11px 13px; margin-bottom: 8px; animation: rise .3s var(--ease) both; }
+  .fact p { margin: 6px 0 8px; }
+  .badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 500; padding: 2px 8px; border-radius: 999px; background: rgba(52, 211, 153, .12); color: var(--ok); }
+  .badge.stale { background: rgba(245, 158, 11, .12); color: var(--warn); }
+  .badge .i { width: 12px; height: 12px; }
+  .about { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; font-size: 12px; color: var(--muted); }
+  .about button { font-family: var(--mono); font-size: 11.5px; background: var(--raise); border: 1px solid var(--line-2); color: var(--text-2); border-radius: 5px; padding: 1px 6px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .about button:hover { color: var(--text); border-color: var(--accent); }
+  .skel { height: 64px; border-radius: var(--radius); margin-bottom: 8px; background: linear-gradient(90deg, var(--panel-2) 25%, var(--raise) 50%, var(--panel-2) 75%); background-size: 200% 100%; animation: shimmer 1.2s linear infinite; }
+
+  /* ---- graph ---- */
+  .graph-panel { position: relative; min-height: 0; background-color: var(--bg);
+                 background-image: radial-gradient(circle, #171a20 1px, transparent 1.2px); background-size: 22px 22px; }
+  #graph { position: absolute; inset: 0; }
+  .g-top { position: absolute; top: 12px; left: 12px; right: 12px; display: flex; gap: 8px; align-items: center; pointer-events: none; z-index: 1; }
+  .g-top > * { pointer-events: auto; }
+  .g-title { background: rgba(14, 16, 20, .82); backdrop-filter: blur(8px); border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px; font-size: 12.5px; color: var(--text-2);
+             max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: opacity .2s; }
+  .g-title b { color: var(--text); font-weight: 500; }
+  .g-tools { margin-left: auto; display: flex; gap: 6px; }
+  .g-tools .btn { background: rgba(14, 16, 20, .82); backdrop-filter: blur(8px); }
+  .legend { position: absolute; left: 12px; bottom: 12px; display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--text-2);
+            background: rgba(14, 16, 20, .82); backdrop-filter: blur(8px); border: 1px solid var(--line); padding: 6px 12px; border-radius: 999px; z-index: 1; }
+  .legend i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: 0; }
+  .legend .n { color: var(--muted); font-variant-numeric: tabular-nums; margin-left: 3px; }
+  .inspector { position: absolute; right: 12px; bottom: 12px; width: min(340px, calc(100% - 24px)); max-height: 60%; overflow-y: auto; z-index: 2;
+               background: rgba(14, 16, 20, .94); backdrop-filter: blur(10px); border: 1px solid var(--line-2); border-radius: var(--radius); padding: 14px;
+               box-shadow: 0 20px 50px rgba(0, 0, 0, .45); animation: slide .28s var(--ease) both; }
+  .inspector[hidden] { display: none; }
+  .inspector h3 { margin: 6px 0 10px; font-size: 14px; overflow-wrap: anywhere; letter-spacing: -.01em; }
+  .inspector dl { margin: 0 0 12px; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12.5px; }
+  .inspector dt { color: var(--muted); } .inspector dd { margin: 0; color: var(--text-2); overflow-wrap: anywhere; }
+  .inspector .row { display: flex; gap: 6px; }
+  .kind { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
+  .close { position: absolute; top: 10px; right: 10px; background: none; border: 0; color: var(--muted); padding: 4px; border-radius: 5px; }
+  .close:hover { color: var(--text); background: var(--raise); }
+  .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--raise); border: 1px solid var(--line-2); border-left: 3px solid var(--bad);
+           padding: 10px 14px; border-radius: var(--radius-sm); font-size: 13px; z-index: 10; animation: rise .3s var(--ease) both; max-width: 90vw; }
+
+  @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes pop { from { opacity: 0; transform: scale(.92); } to { opacity: 1; transform: none; } }
+  @keyframes slide { from { opacity: 0; transform: translateY(12px) scale(.98); } to { opacity: 1; transform: none; } }
+  @keyframes shimmer { to { background-position: -200% 0; } }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(52, 211, 153, .55); } 70%, 100% { box-shadow: 0 0 0 7px rgba(52, 211, 153, 0); } }
+  @keyframes pulse-warn { 0% { box-shadow: 0 0 0 0 rgba(245, 158, 11, .6); } 70%, 100% { box-shadow: 0 0 0 7px rgba(245, 158, 11, 0); } }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
+  @media (max-width: 860px) {
+    body { overflow: auto; }
+    .layout { grid-template-columns: 1fr; grid-template-rows: auto 55vh; }
+    .left { border-right: 0; border-bottom: 1px solid var(--line); min-height: 70vh; }
+    .suggest { grid-template-columns: 1fr; }
+    .tiles { grid-template-columns: repeat(2, 1fr); }
+    .session { display: none; }
+  }
 </style>
 </head>
 <body>
-<header>
-  <h1>Repo<span>Brain</span></h1>
-  <select id="repo" aria-label="Repository"></select>
-  <form id="ingestForm" style="display:flex;gap:6px">
-    <input id="newRepo" placeholder="owner/name or GitHub URL" aria-label="Repository to ingest" size="26">
-    <button>Ingest</button>
+<header class="topbar">
+  <div class="brand">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M9 10 22 8 16 23Z" fill="none" stroke="#394150" stroke-width="2"/><circle cx="9" cy="10" r="4" fill="#60a5fa"/><circle cx="22" cy="8" r="3.5" fill="#f59e0b"/><circle cx="16" cy="23" r="4.5" fill="#34d399"/></svg>
+    RepoBrain <small>on FalkorDB</small>
+  </div>
+  <label class="field" title="Repository"><span class="sr" hidden>Repository</span><select id="repo" aria-label="Repository"></select></label>
+  <form id="ingestForm" class="field" style="padding-right:4px">
+    <svg class="i muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+    <input id="newRepo" placeholder="Add any public GitHub repo…" aria-label="GitHub repository to ingest" size="24">
+    <button class="btn sm">Ingest</button>
   </form>
-  <span id="status" class="muted"></span>
-  <span style="flex:1"></span>
-  <span class="muted">session <code id="sess"></code></span>
-  <button id="newSession" title="Start a new session: chat history resets, long-term memory stays">New session</button>
+  <span class="status" id="status" role="status"><span class="dot" id="statusDot"></span><span id="statusText">Connecting…</span></span>
+  <span class="spacer"></span>
+  <span class="session">Session <code id="sess"></code><button class="btn sm" id="newSession" title="Fresh chat. Long-term memory stays in the graph.">New session</button></span>
 </header>
-<main>
-  <section id="left">
-    <div class="tabs">
-      <button class="on" data-tab="chat">Ask</button>
-      <button data-tab="review">PR review (3 agents)</button>
-      <button data-tab="memory">Memory</button>
-    </div>
-    <div class="pane" id="chat">
-      <div id="log"></div>
-      <div class="chips" id="chips"></div>
-      <form class="ask" id="askForm">
-        <textarea id="q" placeholder="Ask about the code, its history or the people behind it…" aria-label="Question"></textarea>
-        <button class="primary">Ask</button>
+
+<main class="layout">
+  <section class="left">
+    <nav class="tabs" role="tablist" aria-label="Views">
+      <button role="tab" aria-selected="true" aria-controls="chat" data-tab="chat" id="tab-chat"></button>
+      <button role="tab" aria-selected="false" aria-controls="review" data-tab="review" id="tab-review"></button>
+      <button role="tab" aria-selected="false" aria-controls="memory" data-tab="memory" id="tab-memory"></button>
+      <span class="tab-ink" id="ink"></span>
+    </nav>
+
+    <div class="pane" id="chat" role="tabpanel" aria-labelledby="tab-chat">
+      <div class="scroll" id="log" aria-live="polite"></div>
+      <form class="composer" id="askForm">
+        <div class="box">
+          <textarea id="q" rows="1" placeholder="Ask about the code, its history, or the people behind it…" aria-label="Question"></textarea>
+          <button class="send" id="sendBtn" aria-label="Ask" disabled></button>
+        </div>
+        <div class="hint"><span><kbd>Enter</kbd> to ask · <kbd>Shift</kbd>+<kbd>Enter</kbd> new line</span><span><kbd>/</kbd> to focus</span></div>
       </form>
     </div>
-    <div class="pane" id="review" hidden>
-      <form class="ask" id="reviewForm" style="border-top:none;border-bottom:1px solid var(--line);align-items:center">
-        <label>PR # <input id="prNum" type="number" min="1" required style="width:100px"></label>
-        <label class="muted"><input type="checkbox" id="post"> post comment on GitHub</label>
-        <input id="reviewKey" type="password" placeholder="review key" aria-label="Review key (needed to post)" size="10">
-        <button class="primary">Run review</button>
+
+    <div class="pane" id="review" role="tabpanel" aria-labelledby="tab-review" hidden>
+      <form class="review-bar" id="reviewForm">
+        <label class="field" style="width:140px"><span class="muted">PR #</span><input id="prNum" type="number" min="1" required aria-label="Pull request number"></label>
+        <button class="btn primary" id="reviewBtn">Run 3-agent review</button>
+        <details class="post"><summary>Post to GitHub</summary>
+          <div><label><input type="checkbox" id="post"> post comment</label><input class="field" id="reviewKey" type="password" placeholder="review key" aria-label="Review key" style="width:120px"></div>
+        </details>
       </form>
-      <div id="reviewOut"><p class="muted">The impact agent maps the blast radius, the historian digs up past decisions, and the reviewer picks people and writes the comment. They hand off through Task and Note nodes in the graph.</p></div>
+      <div class="scroll" id="reviewOut"></div>
     </div>
-    <div class="pane" id="memory" hidden>
-      <div id="memoryOut" style="flex:1;overflow-y:auto;padding:16px"></div>
+
+    <div class="pane" id="memory" role="tabpanel" aria-labelledby="tab-memory" hidden>
+      <div class="scroll" id="memoryOut"></div>
     </div>
   </section>
-  <section id="right">
+
+  <section class="graph-panel" aria-label="Knowledge graph">
     <div id="graph"></div>
-    <div id="graphTitle">Graph</div>
-    <div id="legend"></div>
+    <div class="g-top">
+      <div class="g-title" id="graphTitle">Graph</div>
+      <div class="g-tools">
+        <button class="btn sm" id="overviewBtn" title="Most central code and its authors"></button>
+        <button class="btn sm" id="fitBtn" title="Fit to screen"></button>
+      </div>
+    </div>
+    <div class="legend" id="legend"></div>
+    <aside class="inspector" id="inspector" hidden aria-label="Node details"></aside>
   </section>
 </main>
-<script>
-const COLORS = { Function:'#7aa2f7', File:'#9ece6a', PR:'#bb9af7', Issue:'#f7768e', Person:'#e0af68', Fact:'#2ac3de', Episode:'#565f89', Task:'#ff9e64', Note:'#c0caf5' };
-const $ = s => document.querySelector(s);
-const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const md = s => DOMPurify.sanitize(marked.parse(s || ''));
-const store = { get: k => { try { return localStorage.getItem(k) } catch { return null } }, set: (k, v) => { try { localStorage.setItem(k, v) } catch {} } };
 
+<script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<script>
+// ---------- basics ----------
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const store = { get: k => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+const P = {
+  search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+  impact: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/>',
+  experts: '<circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0"/><path d="M16 4a4 4 0 0 1 0 8"/><path d="M22 21a7 7 0 0 0-5-6.7"/>',
+  history: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/>',
+  critical: '<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1 6.2L12 17.3 6.5 20.2l1-6.2L3 9.6l6.2-.9z"/>',
+  connect: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
+  recall: '<path d="M12 3a6 6 0 0 0-6 6c0 2.2 1.2 3.6 2 4.5V17h8v-3.5c.8-.9 2-2.3 2-4.5a6 6 0 0 0-6-6z"/><path d="M9 21h6"/>',
+  remember: '<path d="M6 3h12v18l-6-4-6 4z"/>',
+  task_notes: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
+  cypher: '<path d="m4 17 6-5-6-5"/><path d="M12 19h8"/>',
+  send: '<path d="M12 19V5"/><path d="m5 12 7-7 7 7"/>',
+  fit: '<path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>',
+  ext: '<path d="M14 3h7v7"/><path d="M10 14 21 3"/><path d="M21 14v7H3V3h7"/>',
+  x: '<path d="M18 6 6 18M6 6l12 12"/>',
+  alert: '<path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>',
+  chat: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  pr: '<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="18" r="3"/><path d="M6 9v6M18 15V9a3 3 0 0 0-3-3h-4"/><path d="m13 3-2 3 2 3"/>',
+  graph: '<circle cx="5" cy="6" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.5 6h9M6.3 8.2l4.4 7.6M17.7 8.2l-4.4 7.6"/>',
+};
+const icon = (n, cls = 'i') => `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[n] || P.cypher}</svg>`;
+const LOGO = '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M9 10 22 8 16 23Z" fill="none" stroke="#394150" stroke-width="2"/><circle cx="9" cy="10" r="4" fill="#60a5fa"/><circle cx="22" cy="8" r="3.5" fill="#f59e0b"/><circle cx="16" cy="23" r="4.5" fill="#34d399"/></svg>';
+$('#tab-chat').innerHTML = icon('chat') + 'Ask';
+$('#tab-review').innerHTML = icon('pr') + 'PR review';
+$('#tab-memory').innerHTML = icon('recall') + 'Memory';
+$('#sendBtn').innerHTML = icon('send');
+$('#fitBtn').innerHTML = icon('fit') + 'Fit';
+$('#overviewBtn').innerHTML = icon('graph') + 'Overview';
+
+function toast(msg) {
+  const t = document.createElement('div'); t.className = 'toast'; t.role = 'alert'; t.textContent = msg;
+  document.body.append(t); setTimeout(() => t.remove(), 5000);
+}
 async function api(path, body) {
-  const r = await fetch(path, body ? { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) } : {});
+  const r = await fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(data.detail || r.statusText);
   return data;
 }
+// Server-sent events over POST: every agent step arrives as it happens.
+async function stream(path, body, on) {
+  const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.detail || r.statusText); }
+  const reader = r.body.getReader(), dec = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf('\n\n')) >= 0) {
+      const chunk = buf.slice(0, i); buf = buf.slice(i + 2);
+      if (chunk.startsWith('data: ')) on(JSON.parse(chunk.slice(6)));
+    }
+  }
+}
 
-// ---- graph ----
+// ---------- graph ----------
+const COLORS = { Function: '#60a5fa', File: '#94a3b8', PR: '#f59e0b', Issue: '#f43f5e', Person: '#34d399', Fact: '#a78bfa', Episode: '#64748b', Task: '#fb923c', Note: '#e2e8f0' };
+const SIZE = { Person: 15, PR: 11, Issue: 11, Function: 9, File: 10, Fact: 12, Episode: 8, Task: 13, Note: 8 };
 const nodes = new vis.DataSet(), edges = new vis.DataSet();
 const network = new vis.Network($('#graph'), { nodes, edges }, {
-  groups: Object.fromEntries(Object.entries(COLORS).map(([k, c]) => [k, { color: { background:c, border:c, highlight:{ background:'#fff', border:c } } }])),
-  nodes: { shape:'dot', size:11, font:{ color:'#d6dae5', size:12, strokeWidth:3, strokeColor:'#0f1117' } },
-  edges: { arrows:{ to:{ scaleFactor:.5 } }, color:{ color:'#3b4261', highlight:'#7aa2f7' }, font:{ size:9, color:'#7d8597', strokeWidth:0 }, smooth:{ type:'continuous' } },
-  physics: { barnesHut:{ gravitationalConstant:-5000, springLength:110 }, stabilization:{ iterations:200 } },
-  interaction: { hover:true, tooltipDelay:120 },
+  groups: Object.fromEntries(Object.entries(COLORS).map(([k, c]) => [k, {
+    color: { background: c, border: c, highlight: { background: '#fff', border: c }, hover: { background: c, border: '#fff' } },
+    size: SIZE[k], shadow: { enabled: true, color: c + '66', size: 14, x: 0, y: 0 } }])),
+  nodes: { shape: 'dot', borderWidth: 2, font: { color: '#c9ced8', size: 11, face: 'Inter', strokeWidth: 4, strokeColor: '#08090b' } },
+  edges: { width: 1, selectionWidth: 1.5, arrows: { to: { enabled: true, scaleFactor: .45 } }, color: { color: '#2a303a', highlight: '#2dd4bf', hover: '#4b5563' },
+           font: { size: 9, color: '#6f7785', face: 'Inter', strokeWidth: 0, align: 'middle' }, smooth: { type: 'continuous' } },
+  physics: { solver: 'forceAtlas2Based', forceAtlas2Based: { gravitationalConstant: -55, springLength: 95, springConstant: .06, avoidOverlap: .5 },
+             stabilization: { iterations: 120, fit: true }, minVelocity: .8, maxVelocity: 35 },
+  interaction: { hover: true, tooltipDelay: 300, hideEdgesOnDrag: true },
 });
+let graphTitle = '';
+function setTitle(t) { graphTitle = t; $('#graphTitle').innerHTML = t; }
+function legend() {
+  const counts = {}; nodes.forEach(n => counts[n.group] = (counts[n.group] || 0) + 1);
+  $('#legend').innerHTML = Object.entries(COLORS).filter(([k]) => counts[k]).map(([k, c]) => `<span><i style="background:${c}"></i>${k}<span class="n">${counts[k]}</span></span>`).join('') || '<span class="muted">Empty graph</span>';
+}
+const QUIET = new Set(['CALLS', 'DEFINES', 'IMPORTS']);
+const tidy = es => es.map(e => QUIET.has(e.label) ? { ...e, label: undefined, title: e.label } : e);
+function fit() { network.fit({ animation: { duration: 650, easingFunction: 'easeInOutCubic' } }); }
 function show(g, title) {
-  nodes.clear(); edges.clear();
-  nodes.add(g.nodes); edges.add(g.edges);
-  $('#graphTitle').textContent = `${title} · ${g.nodes.length} nodes, ${g.edges.length} edges`;
-  setTimeout(() => network.fit({ animation:true }), 300);
+  closeInspector(); nodes.clear(); edges.clear();
+  nodes.add(g.nodes); edges.add(tidy(g.edges));
+  setTitle(`${title} <span class="muted">· ${g.nodes.length} nodes · ${g.edges.length} edges</span>`);
+  legend(); setTimeout(fit, 350);
 }
-function merge(graphs) {
-  const n = new Map(), e = new Map();
-  graphs.forEach(g => { g.nodes.forEach(x => n.set(x.id, x)); g.edges.forEach(x => e.set(x.id, x)); });
-  return { nodes:[...n.values()], edges:[...e.values()] };
+// Grow the graph in place: new nodes flash so you can watch the agent explore.
+function grow(g) {
+  const fresh = g.nodes.filter(n => !nodes.get(n.id));
+  nodes.update(g.nodes); edges.update(tidy(g.edges.filter(e => !edges.get(e.id))));
+  fresh.forEach(n => nodes.update({ id: n.id, borderWidth: 5, color: { border: '#ffffff' } }));
+  setTimeout(() => fresh.forEach(n => nodes.get(n.id) && nodes.update({ id: n.id, borderWidth: 2, color: { border: COLORS[n.group] } })), 900);
+  legend();
+  if (fresh.length) setTimeout(fit, 250);
 }
-$('#legend').innerHTML = Object.entries(COLORS).map(([k, c]) => `<span><i style="background:${c}"></i>${k}</span>`).join('');
+function spotlight(id) {
+  const keep = new Set([id, ...network.getConnectedNodes(id)]);
+  nodes.update(nodes.get().map(n => ({ id: n.id, opacity: keep.has(n.id) ? 1 : .12 })));
+  edges.update(edges.get().map(e => ({ id: e.id, color: { opacity: keep.has(e.from) && keep.has(e.to) ? 1 : .06 } })));
+}
+function unspotlight() {
+  nodes.update(nodes.get().map(n => ({ id: n.id, opacity: 1 })));
+  edges.update(edges.get().map(e => ({ id: e.id, color: { opacity: 1 } })));
+}
+function focusNode(id) {
+  if (!nodes.get(id)) return false;
+  network.selectNodes([id]); spotlight(id);
+  network.focus(id, { scale: 1.15, animation: { duration: 600, easingFunction: 'easeInOutCubic' } });
+  inspect(id); return true;
+}
+function findNode(kind, key) {
+  const k = String(key).toLowerCase();
+  return nodes.get({ filter: n => n.group === kind && (kind === 'Person' ? (n.props?.login || '').toLowerCase() === k
+    : kind === 'PR' || kind === 'Issue' ? String(n.props?.number) === k : (n.name || '').toLowerCase().endsWith(k)) })[0];
+}
+function inspect(id) {
+  const n = nodes.get(id); if (!n) return;
+  const p = n.props || {}, hist = currentRepo()?.history_from || repo;
+  const link = p.url || (p.login && `https://github.com/${p.login}`) ||
+    (p.path && `https://github.com/${repo}/blob/HEAD/${p.path}${p.line ? `#L${p.line}-L${p.end_line || p.line}` : ''}`);
+  const skip = new Set(['qname', 'url', 'login', 'number', 'title', 'name', 'question']);
+  const rows = Object.entries(p).filter(([k, v]) => !skip.has(k) && v !== '' && v !== 'None');
+  $('#inspector').innerHTML = `<button class="close" aria-label="Close details" onclick="closeInspector()">${icon('x')}</button>
+    <span class="kind" style="color:${COLORS[n.group]}"><i class="dot" style="background:${COLORS[n.group]}"></i>${esc(n.group)}</span>
+    <h3>${esc(n.name)}</h3>
+    <dl>${rows.map(([k, v]) => `<dt>${esc(k.replace('_', ' '))}</dt><dd>${esc(v)}</dd>`).join('')}</dl>
+    <div class="row">${n.group !== 'Episode' && n.group !== 'Note' ? `<button class="btn sm primary" id="askAbout">${icon('chat')}Ask about this</button>` : ''}
+    ${link ? `<a class="btn sm" href="${esc(link)}" target="_blank" rel="noopener">${icon('ext')}GitHub</a>` : ''}</div>`;
+  $('#inspector').hidden = false;
+  const ab = $('#askAbout');
+  if (ab) ab.onclick = () => { selectTab('chat'); $('#q').value = `What should I know about ${n.name}? Who knows it and why is it built this way?`; autosize(); $('#q').focus(); };
+}
+function closeInspector() { $('#inspector').hidden = true; unspotlight(); network.unselectAll(); }
+network.on('click', e => e.nodes.length ? (spotlight(e.nodes[0]), inspect(e.nodes[0])) : closeInspector());
+$('#fitBtn').onclick = fit;
+$('#overviewBtn').onclick = () => loadOverview();
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeInspector();
+  if (e.key === '/' && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) { e.preventDefault(); selectTab('chat'); $('#q').focus(); }
+});
 
-// ---- repos ----
-let repo = store.get('rb-repo');
+// ---------- markdown with live citations ----------
+function cite(md) {
+  const base = 'https://github.com/' + (currentRepo()?.history_from || repo);
+  return (md || '')
+    // models often put a no-break space between "PR" and "#", which \s covers in JS
+    .replace(/\b(PRs?|Issues?|issues?|[Pp]ull request)\s*#(\d+)/g, (m, k, n) => {
+      const kind = /^i/i.test(k) ? 'Issue' : 'PR';
+      return `[${m.replace(/\s+/, ' ')}](${base}/${kind === 'PR' ? 'pull' : 'issues'}/${n} "cite:${kind}:${n}")`;
+    })
+    .replace(/(?<![\w.\/@`-])@([A-Za-z0-9][A-Za-z0-9-]{0,38})\b/g, (m, u) => `[@${u}](https://github.com/${u} "cite:Person:${u}")`);
+}
+function md(text) {
+  const div = document.createElement('div'); div.className = 'answer';
+  div.innerHTML = DOMPurify.sanitize(marked.parse(cite(text)));
+  div.querySelectorAll('a').forEach(a => {
+    a.target = '_blank'; a.rel = 'noopener';
+    const m = /^cite:(\w+):(.+)$/.exec(a.title || '');
+    if (!m) return;
+    a.removeAttribute('title'); a.className = 'cite';
+    a.addEventListener('mouseenter', () => { const n = findNode(m[1], m[2]); if (n) focusNode(n.id); });
+  });
+  return div;
+}
+function highlightCypher(q) {
+  return esc(q).replace(/\b(MATCH|OPTIONAL|WHERE|RETURN|WITH|CALL|YIELD|ORDER BY|LIMIT|UNWIND|MERGE|CREATE|SET|AND|OR|NOT|AS|DESC|DISTINCT|UNION|CONTAINS|ENDS WITH|IN)\b/g, '<span class="kw">$1</span>')
+    .replace(/:([A-Z][A-Za-z]+)/g, ':<span class="lbl">$1</span>').replace(/(&#39;[^&]*?&#39;)/g, '<span class="str">$1</span>');
+}
+function argText(args) { return Object.values(args || {}).map(v => Array.isArray(v) ? v.join(', ') : String(v)).join(' · ').replace(/^.*::/, ''); }
+function chip(s) {
+  const err = (s.result || '').startsWith('ERROR');
+  return `<span class="chip${err ? ' err' : ''}" title="${esc(JSON.stringify(s.args))}">${icon(s.tool)}<b>${esc(s.tool)}</b><span>${esc(argText(s.args)).slice(0, 48)}</span></span>`;
+}
+function cypherDetails(steps) {
+  return `<details class="cy"><summary>${steps.length} graph quer${steps.length === 1 ? 'y' : 'ies'} behind this answer: Cypher and raw results</summary>` +
+    steps.map(s => `<div class="step"><div class="step-h"><b>${esc(s.tool)}</b>(${esc(argText(s.args))})</div>` +
+      (s.cypher || []).map(q => `<pre>${highlightCypher(q)}</pre>`).join('') + `<pre class="res">${esc(s.result)}</pre></div>`).join('') + '</details>';
+}
+
+// ---------- repos ----------
+let repo = store.get('rb-repo') || '', repoList = [];
+const currentRepo = () => repoList.find(r => r.repo === repo);
+function setStatus(kind, text) { $('#statusDot').className = 'dot ' + kind; $('#statusText').textContent = text; }
 async function loadRepos() {
-  const list = await api('/api/repos');
-  $('#repo').innerHTML = list.map(r => `<option value="${esc(r.repo)}">${esc(r.repo)}${r.status === 'ready' ? '' : ' (' + esc(r.status) + ')'}</option>`).join('') || '<option value="">no repos yet: ingest one</option>';
-  if (!list.some(r => r.repo === repo)) repo = list[0]?.repo || '';
+  try { repoList = await api('/api/repos'); } catch (e) { setStatus('bad', 'Offline'); return; }
+  if (!repoList.some(r => r.repo === repo)) repo = repoList.find(r => r.status === 'ready')?.repo || repoList[0]?.repo || '';
+  $('#repo').innerHTML = repoList.map(r => `<option value="${esc(r.repo)}">${esc(r.repo)}${r.status === 'ready' ? '' : ` (${esc(r.status)})`}</option>`).join('') || '<option value="">No repos yet</option>';
   $('#repo').value = repo;
-  const cur = list.find(r => r.repo === repo);
-  $('#status').textContent = cur ? (cur.status === 'ready' ? `synced ${new Date(cur.synced_at).toLocaleString()}` : cur.status === 'error' ? `error: ${cur.error}` : 'ingesting… (about a minute)') : '';
-  if (list.some(r => r.status === 'ingesting')) setTimeout(loadRepos, 4000);
+  const cur = currentRepo();
+  if (!cur) setStatus('', 'Add a repo to start');
+  else if (cur.status === 'ready') setStatus('ok', `Synced ${timeAgo(cur.synced_at)}`);
+  else if (cur.status === 'error') setStatus('bad', 'Ingest failed: ' + (cur.error || ''));
+  else setStatus('busy', 'Building the graph…');
+  if (repoList.some(r => r.status === 'ingesting')) setTimeout(async () => { const was = currentRepo()?.status; await loadRepos(); if (was !== 'ready' && currentRepo()?.status === 'ready') selectRepo(repo); }, 4000);
   return cur;
+}
+function timeAgo(iso) {
+  const s = (Date.now() - new Date(iso)) / 1000;
+  return s < 60 ? 'just now' : s < 3600 ? `${Math.round(s / 60)}m ago` : s < 86400 ? `${Math.round(s / 3600)}h ago` : `${Math.round(s / 86400)}d ago`;
+}
+async function loadOverview() {
+  if (currentRepo()?.status !== 'ready') return;
+  try { show(await api('/api/overview?repo=' + encodeURIComponent(repo)), '<b>Most central code</b> (PageRank) and who wrote it'); } catch (e) { toast(e.message); }
 }
 async function selectRepo(r) {
   repo = r; store.set('rb-repo', r);
-  const cur = await loadRepos();
-  if (cur?.status === 'ready') show(await api('/api/overview?repo=' + encodeURIComponent(repo)), 'Most central code (PageRank) and who wrote it');
+  await loadRepos(); renderEmpty(); loadOverview();
+  if (activeTab === 'memory') loadMemory();
+  if (activeTab === 'review') loadPrs();
 }
-$('#repo').onchange = e => selectRepo(e.target.value);
+$('#repo').onchange = e => { $('#log').innerHTML = ''; selectRepo(e.target.value); };
 $('#ingestForm').onsubmit = async e => {
   e.preventDefault();
   const btn = e.target.querySelector('button'); btn.disabled = true;
   try { const r = await api('/api/ingest', { repo: $('#newRepo').value }); $('#newRepo').value = ''; await selectRepo(r.repo); }
-  catch (err) { $('#status').textContent = err.message; }
+  catch (err) { toast(err.message); }
   btn.disabled = false;
 };
 
-// ---- session (chat history resets per session; facts in the graph do not) ----
-let session = store.get('rb-session');
-function newSession() { session = 's-' + Math.random().toString(36).slice(2, 8); store.set('rb-session', session); $('#sess').textContent = session; $('#log').innerHTML = ''; }
-if (session) $('#sess').textContent = session; else newSession();
+// ---------- session ----------
+const makeSession = () => 's-' + Math.random().toString(36).slice(2, 8);
+let session = store.get('rb-session') || makeSession();
+store.set('rb-session', session); $('#sess').textContent = session;
+function newSession() { session = makeSession(); store.set('rb-session', session); $('#sess').textContent = session; $('#log').innerHTML = ''; renderEmpty(); }
 $('#newSession').onclick = newSession;
 
-// ---- chat ----
-const EXAMPLES = ['Which functions are most critical, and is anyone the only person who understands them?',
-  'What breaks if I change full_dispatch_request?', 'Why does full_dispatch_request look the way it does?',
-  'Who should review a change to app.py, and why?', 'How is @pgjones connected to url_for?'];
-$('#chips').innerHTML = EXAMPLES.map(x => `<button type="button">${esc(x)}</button>`).join('');
-$('#chips').onclick = e => { if (e.target.tagName === 'BUTTON') { $('#q').value = e.target.textContent; $('#q').focus(); } };
-$('#q').onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#askForm').requestSubmit(); } };
-
-function addMsg(cls, html) {
-  const d = document.createElement('div'); d.className = 'msg ' + cls; d.innerHTML = html;
-  $('#log').append(d); d.scrollIntoView({ behavior:'smooth', block:'end' }); return d;
-}
-function stepsHtml(steps) {
-  return `<details><summary>${steps.length} graph quer${steps.length === 1 ? 'y' : 'ies'} behind this answer</summary>` + steps.map(s =>
-    `<div class="step"><b>${esc(s.tool)}</b>(${esc(JSON.stringify(s.args))})<pre>${esc((s.cypher || []).join('\n\n'))}</pre><pre class="res">${esc(s.result)}</pre></div>`).join('') + '</details>';
-}
-$('#askForm').onsubmit = async e => {
-  e.preventDefault();
-  const q = $('#q').value.trim(); if (!q || !repo) return;
-  $('#q').value = ''; addMsg('user', esc(q));
-  const d = addMsg('bot', '<span class="muted">Traversing the graph…</span>');
-  try {
-    const r = await api('/api/ask', { repo, question:q, session });
-    d.innerHTML = md(r.answer) + stepsHtml(r.steps);
-    d.onclick = ev => { if (ev.target.closest('details')) return; document.querySelectorAll('.bot').forEach(x => x.classList.remove('active')); d.classList.add('active'); show(r.graph, 'Evidence for: ' + q.slice(0, 60)); };
-    d.onclick({ target:d });
-  } catch (err) { d.innerHTML = `<span style="color:var(--warn)">${esc(err.message)}</span>`; }
-};
-
-// ---- PR review ----
-document.querySelector('.tabs').onclick = e => {
-  const t = e.target.dataset.tab; if (!t) return;
-  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b === e.target));
+// ---------- tabs ----------
+let activeTab = 'chat';
+function moveInk() { const b = $(`#tab-${activeTab}`), ink = $('#ink'); ink.style.width = b.offsetWidth - 16 + 'px'; ink.style.transform = `translateX(${b.offsetLeft + 8}px)`; }
+function selectTab(t) {
+  activeTab = t;
+  document.querySelectorAll('.tabs [role=tab]').forEach(b => b.setAttribute('aria-selected', b.dataset.tab === t));
   document.querySelectorAll('.pane').forEach(p => p.hidden = p.id !== t);
+  moveInk();
   if (t === 'memory') loadMemory();
+  if (t === 'review') loadPrs();
+}
+document.querySelector('.tabs').onclick = e => { const b = e.target.closest('[role=tab]'); if (b) selectTab(b.dataset.tab); };
+document.querySelector('.tabs').onkeydown = e => {
+  const order = ['chat', 'review', 'memory'], i = order.indexOf(activeTab);
+  if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { const t = order[(i + (e.key === 'ArrowRight' ? 1 : 2)) % 3]; selectTab(t); $(`#tab-${t}`).focus(); }
 };
+addEventListener('resize', moveInk);
 
-// ---- memory ----
-async function loadMemory() {
-  if (!repo) return;
-  $('#memoryOut').innerHTML = '<p class="muted">Loading…</p>';
+// ---------- chat ----------
+const SUGGEST = [
+  ['critical', 'Which functions are most critical, and is anyone the only person who understands them?'],
+  ['impact', 'What breaks if I change full_dispatch_request?'],
+  ['history', 'Why does full_dispatch_request look the way it does?'],
+  ['experts', 'Who should review a change to sessions.py, and why?'],
+];
+function renderEmpty() {
+  if ($('#log').children.length && !$('#log .empty')) return;
+  const c = currentRepo()?.counts || {};
+  const stat = (k, label) => `<div class="stat"><b>${(c[k] || 0).toLocaleString()}</b><span>${label}</span></div>`;
+  $('#log').innerHTML = `<div class="empty">${LOGO.replace('<svg', '<svg width="44" height="44"')}
+    <h2>Ask your codebase anything</h2>
+    <p>Answers come from a FalkorDB graph of <b>${esc(repo || 'your repo')}</b>: its code, every merged PR, the issues behind them, the people, and what earlier sessions learned.</p>
+    <div class="stats">${stat('Function', 'functions')}${stat('PR', 'merged PRs')}${stat('Issue', 'issues')}${stat('Person', 'people')}${stat('Fact', 'facts learned')}</div>
+    <div class="suggest">${SUGGEST.map(([ic, q]) => `<button type="button" data-q="${esc(q)}">${icon(ic)}<span>${esc(q)}</span></button>`).join('')}</div></div>`;
+  $('#log').querySelectorAll('.suggest button').forEach(b => b.onclick = () => ask(b.dataset.q));
+}
+function autosize() { const t = $('#q'); t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 160) + 'px'; $('#sendBtn').disabled = !t.value.trim(); }
+$('#q').oninput = autosize;
+$('#q').onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#askForm').requestSubmit(); } };
+$('#askForm').onsubmit = e => { e.preventDefault(); const q = $('#q').value.trim(); if (q) { $('#q').value = ''; autosize(); ask(q); } };
+let busy = false;
+async function ask(q) {
+  if (!repo || busy) return;
+  busy = true; $('#sendBtn').disabled = true;
+  $('#log .empty')?.remove();
+  const u = document.createElement('div'); u.className = 'msg user'; u.innerHTML = `<div>${esc(q)}</div>`; $('#log').append(u);
+  const m = document.createElement('div'); m.className = 'msg bot';
+  m.innerHTML = `<div class="who">${LOGO}RepoBrain<span class="meta"></span></div><div class="trace"></div>
+                 <div class="thinking"><span class="spin"></span><span class="shimmer">Reading the graph…</span></div>`;
+  $('#log').append(m); m.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  const t0 = performance.now(), tick = setInterval(() => m.querySelector('.meta').textContent = ((performance.now() - t0) / 1000).toFixed(1) + 's', 100);
+  show({ nodes: [], edges: [] }, `<b>Live:</b> ${esc(q.slice(0, 70))}`);
   try {
-    const m = await api('/api/memory?repo=' + encodeURIComponent(repo));
-    const stale = m.facts.filter(f => f.stale).length;
-    $('#memoryOut').innerHTML = `<p class="muted">${m.facts.length} facts (${stale} stale) · ${m.episodes} past questions · ${m.tasks} agent tasks. ` +
-      `Facts are linked to the code they're about; a fact turns stale when that code's AST fingerprint changes or a later PR touches it.</p>` +
-      (m.facts.map(f => `<div class="msg bot fact"><div>${f.stale ? '<span class="badge stale">stale: code changed</span> ' : '<span class="badge">current</span> '}${esc(f.text)}</div>` +
-        `<div class="muted">about ${f.about.map(a => `<code>${esc(a)}</code>`).join(' ')} · learned by ${esc(f.agent)} agent, ${new Date(f.created_at).toLocaleString()}</div></div>`).join('')
-       || '<p class="muted">Nothing learned yet. Ask a question in the Ask tab.</p>');
-    show(m.graph, 'Memory: facts and the code they are about');
-  } catch (err) { $('#memoryOut').innerHTML = `<p style="color:var(--warn)">${esc(err.message)}</p>`; }
+    await stream('/api/ask/stream', { repo, question: q, session }, ev => {
+      if (ev.type === 'step') {
+        m.querySelector('.trace').insertAdjacentHTML('beforeend', chip(ev));
+        m.querySelector('.shimmer').textContent = { search: 'Searching…', impact: 'Tracing callers…', experts: 'Finding who knows this…', history: 'Reading the history…',
+          critical: 'Running PageRank…', connect: 'Finding the shortest path…', recall: 'Checking memory…', remember: 'Saving what it learned…' }[ev.tool] || 'Thinking…';
+        grow(ev.graph);
+      } else if (ev.type === 'done') {
+        m.querySelector('.thinking').remove();
+        m.append(md(ev.answer));
+        m.insertAdjacentHTML('beforeend', cypherDetails(ev.steps));
+        m.querySelector('.meta').textContent = `${ev.steps.length} queries · ${(ev.tokens / 1000).toFixed(1)}k tokens · ${((performance.now() - t0) / 1000).toFixed(1)}s`;
+        const g = ev.graph, title = `<b>Evidence:</b> ${esc(q.slice(0, 60))}`;
+        m.onclick = e => { if (!e.target.closest('a, details')) show(g, title); };
+        grow(g); setTitle(`${title} <span class="muted">· ${g.nodes.length} nodes</span>`);
+      } else if (ev.type === 'error') throw new Error(ev.detail);
+    });
+  } catch (err) {
+    m.querySelector('.thinking')?.remove();
+    m.insertAdjacentHTML('beforeend', `<p style="color:var(--bad)">${icon('alert')} ${esc(err.message)}</p>`);
+  } finally {
+    clearInterval(tick); busy = false; autosize();
+    m.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+}
+
+// ---------- PR review ----------
+const AGENTS = [['impact', 'Impact', 'Blast radius over the call graph'], ['historian', 'Historian', 'Past PRs and issues behind the code'], ['reviewer', 'Reviewer', 'Picks reviewers, writes the comment']];
+let prsFor = null;
+async function loadPrs() {
+  if (prsFor === repo || $('#reviewOut').dataset.busy) return;
+  prsFor = repo;
+  $('#reviewOut').innerHTML = `<p class="muted">Three agents review a pull request. Each one reads the previous agents' notes from the graph, so they hand off through FalkorDB, not through the app's memory.</p>
+    <div class="pipeline">${AGENTS.map(([, name, d], i) => `<div class="stage waiting"><div class="stage-h"><span class="n">${i + 1}</span><b>${name}</b><small>${d}</small></div></div>`).join('')}</div>
+    <p class="muted" style="margin-top:20px">Open pull requests on GitHub</p><div class="prs" id="prList"><div class="skel"></div></div>`;
+  try {
+    const prs = await api('/api/prs?repo=' + encodeURIComponent(repo));
+    $('#prList').innerHTML = prs.map((p, i) => `<button type="button" data-n="${p.number}" style="animation-delay:${i * 30}ms"><span class="num">#${p.number}</span><span>${esc(p.title)}</span><span class="muted" style="margin-left:auto">@${esc(p.author)}</span></button>`).join('')
+      || '<p class="muted">No open PRs. Enter a number above.</p>';
+    $('#prList').querySelectorAll('button').forEach(b => b.onclick = () => { $('#prNum').value = b.dataset.n; $('#reviewForm').requestSubmit(); });
+  } catch { $('#prList').innerHTML = '<p class="muted">Could not list PRs.</p>'; }
 }
 $('#reviewForm').onsubmit = async e => {
   e.preventDefault();
-  const btn = e.target.querySelector('button'); btn.disabled = true;
-  $('#reviewOut').innerHTML = '<p class="muted">Impact → Historian → Reviewer, handing off through the graph… (about 30–60s)</p>';
+  const n = +$('#prNum').value, btn = $('#reviewBtn'), out = $('#reviewOut');
+  btn.disabled = true; out.dataset.busy = 1; prsFor = null;
+  out.innerHTML = `<div id="prHead"><p class="muted">Reading PR #${n} and mapping its diff onto the graph…</p></div>
+    <div class="pipeline">${AGENTS.map(([k, name, d], i) => `<div class="stage waiting" id="st-${k}"><div class="stage-h"><span class="n">${i + 1}</span><b>${name}</b><small>${d}</small><span class="state">Waiting</span></div><div class="trace"></div></div>`).join('')}</div><div id="final"></div>`;
+  show({ nodes: [], edges: [] }, `<b>Reviewing PR #${n}</b>`);
+  const t0 = performance.now();
   try {
-    const r = await api('/api/review', { repo, pr:+$('#prNum').value, post:$('#post').checked, key:$('#reviewKey').value });
-    const graphs = [];
-    $('#reviewOut').innerHTML = `<p class="muted">Changed functions: ${esc(r.changed.join(', ') || 'none found')}</p>` +
-      Object.entries(r.agents).map(([name, a]) => { graphs.push(a.graph); return `<div class="msg bot agent"><h3>${esc(name)} agent</h3>${md(a.answer)}${stepsHtml(a.steps)}</div>`; }).join('') +
-      (r.posted ? `<p><a href="${esc(r.posted)}" target="_blank" rel="noopener">Comment posted on GitHub ↗</a></p>` : '');
-    show(merge(graphs), `PR #${$('#prNum').value}: what the three agents traversed`);
-  } catch (err) { $('#reviewOut').innerHTML = `<p style="color:var(--warn)">${esc(err.message)}</p>`; }
-  btn.disabled = false;
+    await stream('/api/review/stream', { repo, pr: n, post: $('#post').checked, key: $('#reviewKey').value }, ev => {
+      const st = ev.agent && $(`#st-${ev.agent}`);
+      if (ev.type === 'changed') {
+        $('#prHead').innerHTML = `<p style="margin:0 0 4px"><b>#${n}</b> ${esc(ev.title)}</p><div class="changed">${ev.changed.length
+          ? ev.changed.slice(0, 14).map(q => `<span class="chip">${icon('impact')}<span>${esc(q.split('::').pop())}</span></span>`).join('') : '<span class="muted">No Python functions changed</span>'}</div>`;
+      } else if (ev.type === 'agent') {
+        st.className = 'stage running'; st.querySelector('.state').innerHTML = '<span class="spin"></span>Working';
+        st.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      } else if (ev.type === 'step' && st) {
+        st.querySelector('.trace').insertAdjacentHTML('beforeend', chip(ev)); grow(ev.graph);
+      } else if (ev.type === 'note') {
+        st.className = 'stage done'; st.querySelector('.state').innerHTML = icon('check') + 'Handed off';
+        st.querySelector('.n').innerHTML = icon('check'); st.querySelector('.n svg').style.cssText = 'width:12px;height:12px';
+        const note = md(ev.answer); note.className = 'answer note'; note.onclick = () => note.classList.toggle('open'); note.title = 'Click to expand';
+        st.append(note);
+      } else if (ev.type === 'done') {
+        const f = $('#final');
+        f.className = 'final';
+        f.innerHTML = `<div class="final-h">${LOGO.replace('<svg', '<svg width="18" height="18"')}Review comment<span class="muted" style="font-weight:400">· ${((performance.now() - t0) / 1000).toFixed(0)}s</span>
+          ${ev.posted ? `<a class="btn sm" href="${esc(ev.posted)}" target="_blank" rel="noopener">${icon('ext')}Posted on GitHub</a>` : `<button class="btn sm" id="copyBtn">${icon('copy')}Copy markdown</button>`}</div>`;
+        f.append(md(ev.comment));
+        const cb = $('#copyBtn');
+        if (cb) cb.onclick = async () => { try { await navigator.clipboard.writeText(ev.comment); cb.innerHTML = icon('check') + 'Copied'; } catch { toast('Copy failed'); } };
+        f.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        setTitle(`<b>PR #${n}:</b> everything the three agents traversed`);
+      } else if (ev.type === 'error') throw new Error(ev.detail);
+    });
+  } catch (err) { $('#final').innerHTML = `<p style="color:var(--bad)">${icon('alert')} ${esc(err.message)}</p>`; }
+  btn.disabled = false; delete out.dataset.busy;
 };
 
+// ---------- memory ----------
+async function loadMemory() {
+  if (!repo) return;
+  const out = $('#memoryOut');
+  out.innerHTML = '<div class="tiles">' + '<div class="skel" style="height:58px;margin:0"></div>'.repeat(4) + '</div>' + '<div class="skel"></div>'.repeat(3);
+  try {
+    const m = await api('/api/memory?repo=' + encodeURIComponent(repo));
+    const stale = m.facts.filter(f => f.stale).length;
+    const tile = (n, l, i) => `<div class="tile" style="animation-delay:${i * 40}ms"><b>${n}</b><span>${l}</span></div>`;
+    out.innerHTML = `<div class="tiles">${tile(m.facts.length, 'facts learned', 0)}${tile(stale, 'stale (code changed)', 1)}${tile(m.episodes, 'past questions', 2)}${tile(m.tasks, 'agent tasks', 3)}</div>
+      <p class="muted" style="margin:0 0 14px;font-size:13px">Every fact is linked to the code it's about and stores that code's AST fingerprint. Re-sync the repo and any fact whose code changed turns stale, so the agent re-checks it instead of repeating it.</p>` +
+      (m.facts.map((f, i) => `<div class="fact" style="animation-delay:${Math.min(i, 10) * 35}ms">
+        ${f.stale ? `<span class="badge stale">${icon('alert')}Stale: code changed</span>` : `<span class="badge">${icon('check')}Current</span>`}
+        <p>${esc(f.text)}</p>
+        <div class="about">About ${f.about.map(a => `<button type="button" data-a="${esc(a)}">${esc(a.split('::').pop())}</button>`).join('')}<span>· ${esc(f.agent)} agent · ${timeAgo(f.created_at)}</span></div></div>`).join('')
+       || `<div class="empty" style="margin-top:2vh"><h2 style="font-size:17px">Nothing learned yet</h2><p>Ask a question. The agent saves owners, design reasons and risks here as it works.</p></div>`);
+    show(m.graph, '<b>Memory:</b> facts and the code they are about');
+    out.querySelectorAll('.about button').forEach(b => b.onclick = () => {
+      const a = b.dataset.a, n = a.startsWith('@') ? findNode('Person', a.slice(1)) : a.startsWith('#') ? (findNode('PR', a.slice(1)) || findNode('Issue', a.slice(1)))
+        : nodes.get({ filter: x => x.name === a || x.props?.path === a })[0];
+      if (n) focusNode(n.id);
+    });
+  } catch (e) { out.innerHTML = `<p style="color:var(--bad)">${esc(e.message)}</p>`; }
+}
+
+// ---------- boot ----------
+renderEmpty(); autosize();
+requestAnimationFrame(moveInk); document.fonts?.ready.then(moveInk);
 selectRepo(repo);
 </script>
 </body>

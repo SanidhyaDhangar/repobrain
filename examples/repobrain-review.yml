@@ -1,0 +1,35 @@
+# Drop this into .github/workflows/ of a repo RepoBrain has ingested: every new PR gets a review comment
+# from RepoBrain's impact, historian and reviewer agents.
+name: RepoBrain review
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Ask RepoBrain's impact, historian and reviewer agents
+        env:
+          REPOBRAIN_URL: https://repobrain-j9c4.onrender.com
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          curl -sSf --max-time 1100 -X POST "$REPOBRAIN_URL/api/review" \
+            -H 'content-type: application/json' \
+            -d "{\"repo\": \"$REPO\", \"pr\": $PR}" > review.json
+          { jq -r '.comment' review.json
+            echo
+            echo '---'
+            echo "<sub>🧠 [RepoBrain]($REPOBRAIN_URL): impact, historian and reviewer agents reasoning over a FalkorDB graph of this repo's code, history and people. Changed functions: $(jq -r '.changed | length' review.json).</sub>"
+          } > comment.md
+      - name: Post the review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: gh pr comment "$PR" --repo "${{ github.repository }}" --body-file comment.md

@@ -1,12 +1,14 @@
 """HTTP API and the single-page UI. Run: uv run uvicorn app:app --reload"""
 import hmac
+import json
 import os
+import queue
 import re
 import threading
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from openai import APIError
 from pydantic import BaseModel
 
@@ -33,6 +35,27 @@ def repo_name(raw: str) -> str:
     return repo
 
 
+def sse(work):
+    """Run work(emit) in a thread and stream each event it emits, then its result, as server-sent events."""
+    events = queue.Queue()
+
+    def run():
+        try:
+            events.put({"type": "done", **work(events.put)})
+        except Exception as e:
+            events.put({"type": "error", "detail": getattr(e, "detail", None) or getattr(e, "message", None) or str(e)})
+        events.put(None)
+
+    threading.Thread(target=run, daemon=True).start()
+
+    def stream():
+        while (event := events.get()) is not None:
+            yield f"data: {json.dumps(event, default=str)}\n\n"
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @app.get("/")
 def index():
     return FileResponse(STATIC / "index.html")
@@ -42,9 +65,12 @@ def index():
 def list_repos():
     out = []
     for r in repos():
-        row = graph(r).ro_query("MATCH (r:Repo) RETURN r.status, r.synced_at, r.description, r.error LIMIT 1").result_set
-        status, synced, desc, error = row[0] if row else ("unknown", None, "", None)
-        out.append({"repo": r, "status": status, "synced_at": synced, "description": desc, "error": error})
+        g = graph(r)
+        row = g.ro_query("MATCH (r:Repo) RETURN r.status, r.synced_at, r.description, r.error, r.history_from LIMIT 1").result_set
+        status, synced, desc, error, hist = row[0] if row else ("unknown", None, "", None, None)
+        counts = dict(g.ro_query("MATCH (n) RETURN labels(n)[0], count(*)").result_set)
+        out.append({"repo": r, "status": status, "synced_at": synced, "description": desc, "error": error,
+                    "history_from": hist or r, "counts": counts})
     return out
 
 
@@ -86,13 +112,19 @@ def ask(req: AskReq):
     return agent.ask(repo_name(req.repo), req.question[:2000], session=req.session[:100])
 
 
+@app.post("/api/ask/stream")
+def ask_stream(req: AskReq):
+    repo = repo_name(req.repo)
+    return sse(lambda emit: agent.ask(repo, req.question[:2000], session=req.session[:100], emit=emit))
+
+
 @app.get("/api/overview")
 def overview(repo: str):
     """Starting picture: the most central functions, who calls them, and who wrote them."""
     run = Run(graph(repo_name(repo)))
     top = """CALL algo.pageRank('Function', 'CALLS') YIELD node, score WITH node, score WHERE NOT node.path CONTAINS 'test'
              WITH node ORDER BY score DESC LIMIT 12"""
-    run.query(f"{top} MATCH p = (:Function)-[:CALLS]->(node) RETURN p LIMIT 60")
+    run.query(f"{top} MATCH p = (c:Function)-[:CALLS]->(node) WHERE NOT c.path CONTAINS 'test' RETURN p LIMIT 60")
     run.query(f"{top} MATCH p = (:Person)-[:AUTHORED]->(:PR)-[:MODIFIED]->(node) RETURN p LIMIT 40")
     return run.view()
 
@@ -115,6 +147,14 @@ def memory(repo: str):
             "episodes": counts[0], "tasks": counts[1], "graph": run.view()}
 
 
+@app.get("/api/prs")
+def open_prs(repo: str):
+    """Open PRs to pick from in the review tab."""
+    with ingest.gh() as c:
+        r = c.get(f"/repos/{repo_name(repo)}/pulls", params={"state": "open", "per_page": 15})
+    return [{"number": p["number"], "title": p["title"], "author": p["user"]["login"]} for p in r.json()] if r.is_success else []
+
+
 class ReviewReq(BaseModel):
     repo: str
     pr: int
@@ -122,8 +162,7 @@ class ReviewReq(BaseModel):
     key: str = ""  # must match REVIEW_KEY to post a comment
 
 
-@app.post("/api/review")
-def review(req: ReviewReq):
+def run_review(req: ReviewReq, emit=None):
     repo = repo_name(req.repo)
     if req.post and (repo.split("/")[0].lower() not in POST_OWNERS
                      or not REVIEW_KEY or not hmac.compare_digest(req.key, REVIEW_KEY)):
@@ -139,10 +178,22 @@ def review(req: ReviewReq):
         # an open PR's diff is against the base branch, which is what the graph holds, so line ranges are exact
         changed = sorted({q for f in files for n in ingest.changed_lines(f.get("patch"))
                           for q, p, start, end in funcs if p == f["filename"] and start <= n <= end})
-        results = agent.review_pr(repo, req.pr, pr.json()["title"], pr.json()["body"], changed, paths)
+        if emit:
+            emit({"type": "changed", "title": pr.json()["title"], "changed": changed, "files": paths})
+        results = agent.review_pr(repo, req.pr, pr.json()["title"], pr.json()["body"], changed, paths, emit=emit)
         comment = results["reviewer"]["answer"]
         posted = None
         if req.post:
             body = f"{comment}\n\n---\n<sub>RepoBrain: impact, historian and reviewer agents reasoning over a FalkorDB graph of this repo.</sub>"
             posted = c.post(f"/repos/{repo}/issues/{req.pr}/comments", json={"body": body}).raise_for_status().json()["html_url"]
     return {"changed": changed, "agents": results, "comment": comment, "posted": posted}
+
+
+@app.post("/api/review")
+def review(req: ReviewReq):
+    return run_review(req)
+
+
+@app.post("/api/review/stream")
+def review_stream(req: ReviewReq):
+    return sse(lambda emit: run_review(req, emit))

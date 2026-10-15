@@ -68,8 +68,8 @@ class Run:
 
     def view(self):
         """vis-network friendly subgraph."""
-        nodes = [{"id": n.id, "label": short(n), "group": n.labels[0],
-                  "title": "\n".join(f"{k}: {str(v)[:200]}" for k, v in n.properties.items())}
+        nodes = [{"id": n.id, "label": short(n), "group": n.labels[0], "name": name(n),
+                  "props": {k: str(v)[:300] for k, v in n.properties.items() if k != "hash"}}
                  for n in self.nodes.values()]
         edges = [{"id": e.id, "from": _id(e.src_node), "to": _id(e.dest_node), "label": e.relation}
                  for e in self.edges.values() if _id(e.src_node) in self.nodes and _id(e.dest_node) in self.nodes]

@@ -225,7 +225,7 @@ ROLES = {
 }
 
 
-def ask(repo, question, session="default", agent="analyst", task=None, max_steps=8):
+def ask(repo, question, session="default", agent="analyst", task=None, max_steps=8, emit=None):
     g = graph(repo)
     run = Run(g)
     role, tool_names = ROLES[agent]
@@ -263,6 +263,8 @@ def ask(repo, question, session="default", agent="analyst", task=None, max_steps
             except Exception as e:  # errors go back to the model so it can fix its call
                 out = f"ERROR: {e}"
             steps.append({"tool": name, "args": args, "result": out[:3000], "cypher": run.log[start:][-4:]})
+            if emit:  # live trace for the UI: the step plus the subgraph gathered so far
+                emit({"type": "step", "agent": agent, **steps[-1], "graph": run.view()})
             msgs.append({"role": "tool", "tool_call_id": tc.id, "content": out[:3000]})
     if not answer:  # out of steps: a writer with no tools in sight answers from the evidence gathered so far
         evidence = "\n\n".join(m["content"] for m in msgs if m["role"] == "tool")[-12000:]
@@ -287,7 +289,7 @@ def ask(repo, question, session="default", agent="analyst", task=None, max_steps
 CONSOLIDATE = """From this Q&A about a codebase, extract at most 2 durable, non-obvious facts worth remembering in future
 sessions: who owns or knows some code, why a design is the way it is, or a risk. Each fact must be stated in the answer
 with its evidence (merged PR/issue numbers) and be about the existing code, its history or its people; never record
-what a pending, unmerged PR under review does. Return JSON {{"facts": [{{"fact": "...", "about": ["function, file, @login or PR number"]}}]}},
+what a pending, unmerged PR under review does. Each fact must stand alone: name the function, file or person it is about. Return JSON {{"facts": [{{"fact": "...", "about": ["function, file, @login or PR number"]}}]}},
 or {{"facts": []}} if nothing qualifies.
 
 Q: {q}
@@ -306,7 +308,7 @@ def consolidate(run, ctx, question, answer, usage):
         pass
 
 
-def review_pr(repo, number, title, body, changed, paths):
+def review_pr(repo, number, title, body, changed, paths, emit=None):
     """Three agents review a PR, handing off through a Task node in the graph rather than in Python memory."""
     task = f"pr-{number}@{now()}"  # one Task per review run; earlier runs stay as history
     g = graph(repo)
@@ -319,8 +321,12 @@ def review_pr(repo, number, title, body, changed, paths):
              f"Changed test functions: {len(changed) - len(code)}")
     results = {}
     for agent in ("impact", "historian", "reviewer"):
-        out = ask(repo, brief, session=f"{task}:{agent}", agent=agent, task=task, max_steps=5)
+        if emit:
+            emit({"type": "agent", "agent": agent})
+        out = ask(repo, brief, session=f"{task}:{agent}", agent=agent, task=task, max_steps=5, emit=emit)
         g.query("""MATCH (t:Task {key: $task}) CREATE (n:Note {agent: $agent, text: $text, created_at: $now})-[:FOR]->(t)""",
                 {"task": task, "agent": agent, "text": out["answer"], "now": now()})
         results[agent] = out
+        if emit:
+            emit({"type": "note", "agent": agent, "answer": out["answer"]})
     return results
