@@ -4,6 +4,7 @@ Code structure comes from the Python AST (files, functions, calls, imports).
 History comes from GitHub (merged PRs, the issues they fixed, open issues, and the people behind them).
 """
 import ast
+import hashlib
 import io
 import os
 import re
@@ -42,6 +43,11 @@ def gh():
 
 # ---------- code ----------
 
+def fingerprint(node) -> str:
+    """Hash of the AST, so formatting and comments don't count as a change but code does."""
+    return hashlib.sha1(ast.dump(node).encode()).hexdigest()[:12]
+
+
 def module_of(path: str) -> str:
     parts = path[:-3].split("/")
     return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
@@ -62,12 +68,13 @@ def parse_code(tar: bytes):
                 tree = ast.parse(src)
             except (SyntaxError, ValueError):
                 continue
-            files.append({"path": path, "loc": src.count(b"\n"), "test": "test" in path.lower()})
+            files.append({"path": path, "loc": src.count(b"\n"), "test": "test" in path.lower(), "hash": fingerprint(tree)})
 
             def add(fn, local):
                 qname = f"{path}::{local}"
                 funcs.append({"qname": qname, "name": fn.name, "path": path, "line": fn.lineno,
-                              "end_line": fn.end_lineno, "doc": (ast.get_docstring(fn) or "").split("\n")[0][:200]})
+                              "end_line": fn.end_lineno, "doc": (ast.get_docstring(fn) or "").split("\n")[0][:200],
+                              "hash": fingerprint(fn)})
                 for c in ast.walk(fn):
                     if isinstance(c, ast.Call):
                         f = c.func
@@ -160,10 +167,32 @@ def issue_row(i):
 
 
 def changed_functions(patch: str, funcs_in_file):
-    """Functions whose name appears on a changed line or hunk header of a diff."""
-    # ponytail: name match on the diff, not line ranges (line numbers drift after merge)
-    changed = "\n".join(l for l in (patch or "").splitlines() if l[:1] in "+-@")
-    return [f["qname"] for f in funcs_in_file if re.search(rf"\b{re.escape(f['name'])}\b", changed)]
+    """Functions a merged PR changed: named in a hunk header's scope context, or whose `def` line changed."""
+    # ponytail: name match, not line ranges (line numbers drift after merge); open PRs use changed_lines instead
+    lines = (patch or "").splitlines()
+    scopes = " ".join(l.split("@@")[-1] for l in lines if l.startswith("@@"))
+    changed = "\n".join(l for l in lines if l[:1] in "+-")
+    return [f["qname"] for f in funcs_in_file if re.search(rf"\b{re.escape(f['name'])}\b", scopes)
+            or re.search(rf"def {re.escape(f['name'])}\(", changed)]
+
+
+HUNK = re.compile(r"^@@ -(\d+)")
+
+
+def changed_lines(patch: str) -> set:
+    """Base-branch line numbers a diff touches; an inserted line counts as the line just above it."""
+    out, old = set(), 0
+    for l in (patch or "").splitlines():
+        if m := HUNK.match(l):
+            old = int(m[1])
+        elif l.startswith("-"):
+            out.add(old)
+            old += 1
+        elif l.startswith("+"):
+            out.add(max(old - 1, 1))
+        elif not l.startswith("\\"):
+            old += 1
+    return out
 
 
 def mentioned(text: str, funcs, files):
@@ -182,7 +211,6 @@ def write(g, cypher, rows, size=500):
 
 
 def ingest(repo: str, log=print):
-    owner, name = repo.split("/")
     g = graph(repo)
     for q in SCHEMA:
         try:
@@ -194,6 +222,9 @@ def ingest(repo: str, log=print):
 
     with gh() as c:
         meta = c.get(f"/repos/{repo}").raise_for_status().json()
+        # a fork has no PR history of its own, so it learns from its upstream's
+        hist = meta["parent"]["full_name"] if meta.get("fork") else repo
+        owner, name = hist.split("/")
         log(f"downloading {repo}@{meta['default_branch']}")
         tar = c.get(f"/repos/{repo}/tarball/{meta['default_branch']}").raise_for_status().content
         if len(tar) > MAX_TARBALL:
@@ -205,9 +236,9 @@ def ingest(repo: str, log=print):
         # Code is rebuilt on every sync; history and memory nodes stay, so facts can go stale.
         g.query("MATCH ()-[e:CALLS|IMPORTS|DEFINES]->() DELETE e")
         g.query("MATCH (f:Function) WHERE NOT f.qname IN $live DETACH DELETE f", {"live": [f["qname"] for f in funcs]})
-        write(g, "UNWIND $rows AS r MERGE (f:File {path: r.path}) SET f.loc = r.loc, f.test = r.test", files)
+        write(g, "UNWIND $rows AS r MERGE (f:File {path: r.path}) SET f.loc = r.loc, f.test = r.test, f.hash = r.hash", files)
         write(g, """UNWIND $rows AS r MATCH (file:File {path: r.path}) MERGE (f:Function {qname: r.qname})
-                    SET f.name = r.name, f.path = r.path, f.line = r.line, f.end_line = r.end_line, f.doc = r.doc
+                    SET f.name = r.name, f.path = r.path, f.line = r.line, f.end_line = r.end_line, f.doc = r.doc, f.hash = r.hash
                     MERGE (file)-[:DEFINES]->(f)""", funcs)
         write(g, "UNWIND $rows AS r MATCH (a:Function {qname: r[0]}), (b:Function {qname: r[1]}) CREATE (a)-[:CALLS]->(b)", call_edges)
         write(g, "UNWIND $rows AS r MATCH (a:File {path: r[0]}), (b:File {path: r[1]}) CREATE (a)-[:IMPORTS]->(b)", file_imports)
@@ -220,10 +251,10 @@ def ingest(repo: str, log=print):
                 break
             cursor = page["pageInfo"]["endCursor"]
         prs = prs[:MAX_PRS]
-        log(f"history: {len(prs)} merged PRs, fetching diffs")
+        log(f"history from {hist}: {len(prs)} merged PRs, fetching diffs")
 
         def pr_files(pr):
-            r = c.get(f"/repos/{repo}/pulls/{pr['number']}/files", params={"per_page": 100})
+            r = c.get(f"/repos/{hist}/pulls/{pr['number']}/files", params={"per_page": 100})
             return r.json() if r.is_success else []
 
         with ThreadPoolExecutor(8) as pool:
@@ -260,8 +291,8 @@ def ingest(repo: str, log=print):
                 WHERE (t:Function AND t.qname = r.target) OR (t:File AND t.path = r.target)
                 MERGE (i)-[:MENTIONS]->(t)""", mentions)
 
-    g.query("MATCH (r:Repo {name: $repo}) SET r.status = 'ready', r.synced_at = $now, r.branch = $branch, r.description = $desc",
-            {"repo": repo, "now": datetime.now(timezone.utc).isoformat(), "branch": meta["default_branch"], "desc": meta.get("description") or ""})
+    g.query("MATCH (r:Repo {name: $repo}) SET r.status = 'ready', r.synced_at = $now, r.branch = $branch, r.description = $desc, r.history_from = $hist",
+            {"repo": repo, "now": datetime.now(timezone.utc).isoformat(), "branch": meta["default_branch"], "desc": meta.get("description") or "", "hist": hist})
     stats = {"files": len(files), "functions": len(funcs), "calls": len(call_edges), "prs": len(prs),
              "issues": len(issues), "modified_links": len(modified), "issue_mentions": len(mentions)}
     log(f"done: {stats}")

@@ -2,7 +2,7 @@
 import io
 import tarfile
 
-from ingest import changed_functions, mentioned, parse_code, resolve
+from ingest import changed_functions, changed_lines, mentioned, parse_code, resolve
 
 FILES = {
     "pkg/__init__.py": "",
@@ -30,5 +30,8 @@ assert sorted(call_edges) == [["pkg/a.py::C.m", "pkg/a.py::run"], ["pkg/a.py::ru
 
 patch = "@@ -1,3 +1,3 @@ def run():\n-    return helper()\n+    return helper() + 1\n"
 assert changed_functions(patch, [f for f in funcs if f["path"] == "pkg/a.py"]) == ["pkg/a.py::run"]
+# line 3 replaced; one line inserted after line 5 (inside C.m, lines 5-6)
+assert changed_lines("@@ -2,3 +2,3 @@ def run():\n def run():\n-    return helper()\n+    return helper() + 1\n"
+                     "@@ -5,1 +5,2 @@ class C:\n     def m(self):\n+        pass\n") == {3, 5}
 assert mentioned("crash in `helper` from b.py", funcs, files) == ["pkg/b.py::helper", "pkg/b.py"]
 print("ok")

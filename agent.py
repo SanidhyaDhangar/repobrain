@@ -12,10 +12,29 @@ from openai import BadRequestError, OpenAI, RateLimitError
 
 from graph import Run, graph
 
-LLM = OpenAI(base_url=os.environ.get("LLM_BASE_URL", "https://api.groq.com/openai/v1"),
-             api_key=os.environ.get("LLM_API_KEY", "missing"), max_retries=5)
-MODEL = os.environ.get("LLM_MODEL", "openai/gpt-oss-120b")
-FALLBACK = os.environ.get("LLM_FALLBACK_MODEL", "openai/gpt-oss-20b")  # separate rate-limit bucket on Groq
+BASE = os.environ.get("LLM_BASE_URL", "https://api.groq.com/openai/v1")
+KEY = os.environ.get("LLM_API_KEY", "missing")
+# Primary, then a fallback used when the primary is rate limited. On Groq's free tier each model has its own
+# tokens-per-minute bucket, so falling back to a second model keeps answers coming.
+PROVIDERS = [(OpenAI(base_url=BASE, api_key=KEY, max_retries=1), os.environ.get("LLM_MODEL", "openai/gpt-oss-120b")),
+             (OpenAI(base_url=os.environ.get("LLM2_BASE_URL", BASE), api_key=os.environ.get("LLM2_API_KEY", KEY), max_retries=4),
+              os.environ.get("LLM2_MODEL", "openai/gpt-oss-20b"))]
+
+
+def chat(usage, **kw):
+    """One chat completion, falling through the providers on rate limits. Adds tokens spent to usage[0]."""
+    for i, (client, model) in enumerate(PROVIDERS):
+        try:
+            r = client.chat.completions.create(model=model, temperature=0, **kw)
+            usage[0] += r.usage.total_tokens if r.usage else 0
+            return r.choices[0].message
+        except RateLimitError:
+            if i == len(PROVIDERS) - 1:
+                raise
+
+
+def tidy(text):
+    return re.sub(r"\s*【[^】]*】", "", text or "").strip()
 
 
 def match(p: str) -> str:
@@ -45,10 +64,13 @@ def search(run, ctx, text):
 
 
 def facts_about(run, name):
-    """Facts learned earlier about an entity; changed_since lists PRs merged after the fact was learned (= maybe stale)."""
-    return run.query(f"""MATCH (t) WHERE {match('$name')} MATCH (m:Fact)-[:ABOUT]->(t)
+    """Facts learned earlier about an entity. A fact is stale when the code's AST fingerprint differs from the one
+    recorded when the fact was learned, or when a PR changed it since."""
+    return run.query(f"""MATCH (t) WHERE {match('$name')} MATCH (m:Fact)-[a:ABOUT]->(t)
                          OPTIONAL MATCH (t)<-[:MODIFIED|TOUCHED]-(pr:PR) WHERE pr.merged_at > m.created_at
-                         RETURN m.text AS fact, m.agent AS by, m.created_at AS learned, collect(pr.number) AS changed_since
+                         WITH m, a, t, collect(pr.number) AS prs
+                         RETURN m.text AS fact, m.agent AS by, m.created_at AS learned,
+                                (a.hash IS NOT NULL AND a.hash <> t.hash) OR size(prs) > 0 AS stale, prs AS changed_by_prs
                          ORDER BY learned DESC LIMIT 8""", {"name": clean(name)})
 
 
@@ -115,18 +137,18 @@ def recall(run, ctx, name):
     past = run.query(f"""MATCH (t) WHERE {match('$name')} MATCH (e:Episode)-[:USED]->(t)
                          RETURN e.question AS asked, left(e.answer, 300) AS answered, e.created_at AS at
                          ORDER BY at DESC LIMIT 3""", p)
-    return f"Facts (changed_since lists PRs merged after the fact was learned, so it may be stale):\n{facts}\n\nPast questions about it:\n{past}"
+    return f"Facts (stale: true means the code changed after the fact was learned):\n{facts}\n\nPast questions about it:\n{past}"
 
 
 def remember(run, ctx, fact, about):
     return run.query(f"""CREATE (m:Fact {{text: $fact, created_at: $now, agent: $agent, session: $session}})
                          WITH m UNWIND $about AS x MATCH (t) WHERE {match('x')}
-                         MERGE (m)-[:ABOUT]->(t) RETURN m, t""",
+                         MERGE (m)-[a:ABOUT]->(t) SET a.hash = t.hash RETURN m, t""",
                      {"fact": fact, "about": [clean(a) for a in about], "now": now(), **ctx}, write=True)
 
 
 def task_notes(run, ctx):
-    return run.query("""MATCH (n:Note)-[:FOR]->(t:Task {key: $task}) RETURN n.agent AS agent, n.text AS note
+    return run.query("""MATCH (n:Note)-[:FOR]->(t:Task {key: $task}) RETURN n.agent AS agent, left(n.text, 1400) AS note
                         ORDER BY n.created_at""", {"task": ctx.get("task", "")})
 
 
@@ -174,29 +196,36 @@ and your own long-term memory are a FalkorDB graph you query through tools. {rol
 Rules:
 - Answer only from tool results. Never invent names, numbers or reasons; say what the graph does not show.
   Only say someone authored or reviewed a PR if a tool result shows that exact Person-AUTHORED/REVIEWED->PR link.
-- Tool results may include "From memory" facts from earlier sessions: use them, and say so if `changed_since`
-  lists PRs (the code changed after the fact was learned, so it may be stale).
+- Tool results may include "From memory" facts from earlier sessions: use them. If a fact has stale: true, the code
+  changed after it was learned: say so, re-check it with the other tools, and `remember` the corrected fact.
 - Cite evidence inline as plain text: PR #N, Issue #N, @login, file paths, Class.method names. No 【】 markers.
 - Before your final answer, if you found an owner, the reason behind a design, or a risk, save it once with `remember`.
 - Search once, then pass the exact qname to history/experts/impact. Use `cypher` only when no other tool fits.
 - Be concise: the answer first, then a few evidence bullets."""
 
+OUTPUT = {
+    "analyst": "a concise answer first, then evidence bullets citing PR/issue numbers, @logins and function names.",
+    "impact": "a risk assessment under 150 words: what calls the changed code, affected tests, open issues.",
+    "historian": "under 200 words: the past PRs and issues behind the changed code and their reasons, flagging anything "
+                 "this PR might undo or re-break.",
+    "reviewer": "the final PR comment in GitHub markdown with sections: Risk (one line: low/medium/high and why), "
+                "Blast radius, History to keep in mind (from the historian's note), Suggested reviewers (2-3, with why), "
+                "Test checklist.",
+}
+
 ROLES = {
     "analyst": ("Answer the user's question about the codebase and the team behind it.", list(TOOLS)),
-    "impact": ("You are the IMPACT agent on a PR review. Work out the blast radius of the changed functions: callers, "
-               "affected tests, open issues, critical code. Output a short risk assessment.",
-               ["impact", "critical", "search", "recall", "remember", "cypher"]),
-    "historian": ("You are the HISTORIAN agent on a PR review. Read the impact agent's notes, then find past PRs and issues "
-                  "that changed the same code and the reasons behind them. Flag anything this PR might undo.",
-                  ["task_notes", "history", "recall", "remember", "search", "cypher"]),
-    "reviewer": ("You are the REVIEWER agent on a PR review. Read the other agents' notes, pick the best 2-3 human reviewers "
-                 "with `experts`, and write the final PR comment in GitHub markdown: risk level, blast radius, relevant "
-                 "history, suggested reviewers (with why), and a test checklist.",
-                 ["task_notes", "experts", "recall", "remember", "cypher"]),
+    "impact": ("You are the IMPACT agent on a PR review. Call `impact` on the 1-3 most important changed non-test "
+               f"functions (and `critical` if useful). Then write {OUTPUT['impact']}", ["impact", "critical"]),
+    "historian": ("You are the HISTORIAN agent on a PR review. Read the impact agent's note with `task_notes`, call "
+                  f"`history` on the 1-3 most important changed functions. Then write {OUTPUT['historian']}",
+                  ["task_notes", "history"]),
+    "reviewer": ("You are the REVIEWER agent on a PR review. Read the other agents' notes with `task_notes` (once), call "
+                 f"`experts` on the 1-2 main changed files. Then write {OUTPUT['reviewer']}", ["task_notes", "experts"]),
 }
 
 
-def ask(repo, question, session="default", agent="analyst", task=None):
+def ask(repo, question, session="default", agent="analyst", task=None, max_steps=8):
     g = graph(repo)
     run = Run(g)
     role, tool_names = ROLES[agent]
@@ -209,22 +238,19 @@ def ask(repo, question, session="default", agent="analyst", task=None):
         msgs += [{"role": "user", "content": q}, {"role": "assistant", "content": a}]
     msgs.append({"role": "user", "content": question})
 
-    steps, answer, model = [], "", MODEL
-    for _ in range(8):
+    steps, answer, usage = [], "", [0]
+    for _ in range(max_steps):
         try:
-            m = LLM.chat.completions.create(model=model, messages=msgs, tools=[spec(t) for t in tool_names],
-                                            temperature=0).choices[0].message
-        except RateLimitError:
-            if model == FALLBACK:
-                raise
-            model = FALLBACK
-            continue
+            m = chat(usage, messages=msgs, tools=[spec(t) for t in tool_names])
         except BadRequestError as e:  # the model sometimes emits a malformed tool call; tell it and retry
             msgs.append({"role": "user", "content": f"Your last tool call was malformed ({str(e)[:200]}). Try again."})
             continue
         if not m.tool_calls:
-            answer = re.sub(r"\s*【[^】]*】", "", m.content or "")
-            break
+            answer = tidy(m.content)
+            if answer:
+                break
+            msgs.append({"role": "user", "content": "Write your answer now."})  # gpt-oss sometimes returns nothing
+            continue
         msgs.append({"role": "assistant", "content": m.content or "",
                      "tool_calls": [tc.model_dump(include={"id", "type", "function"}) for tc in m.tool_calls]})
         for tc in m.tool_calls:
@@ -237,24 +263,31 @@ def ask(repo, question, session="default", agent="analyst", task=None):
             except Exception as e:  # errors go back to the model so it can fix its call
                 out = f"ERROR: {e}"
             steps.append({"tool": name, "args": args, "result": out[:3000], "cypher": run.log[start:][-4:]})
-            msgs.append({"role": "tool", "tool_call_id": tc.id, "content": out[:4000]})
-    else:  # out of steps: answer with what was gathered instead of giving up
-        msgs.append({"role": "user", "content": "Stop calling tools. Answer now from the tool results above."})
-        answer = re.sub(r"\s*【[^】]*】", "", LLM.chat.completions.create(model=model, messages=msgs, temperature=0)
-                        .choices[0].message.content or "")
+            msgs.append({"role": "tool", "tool_call_id": tc.id, "content": out[:3000]})
+    if not answer:  # out of steps: a writer with no tools in sight answers from the evidence gathered so far
+        evidence = "\n\n".join(m["content"] for m in msgs if m["role"] == "tool")[-12000:]
+        try:
+            answer = tidy(chat(usage, messages=[
+                {"role": "system", "content": f"You write about the GitHub repo {repo} using only the evidence given. "
+                                              f"You have no tools. Write {OUTPUT[agent]}"},
+                {"role": "user", "content": f"{question}\n\nEvidence from the repo's knowledge graph:\n{evidence}"}]).content)
+        except BadRequestError:
+            pass
+        answer = answer or "I couldn't finish in time. Here is what the graph returned:\n\n" + evidence[:3000]
 
     used = [i for i, n in run.nodes.items() if n.labels[0] in ("Function", "File", "PR", "Issue", "Person")]
     g.query("""CREATE (e:Episode {question: $q, answer: $a, session: $s, agent: $agent, created_at: $now})
                WITH e UNWIND $used AS id MATCH (n) WHERE id(n) = id MERGE (e)-[:USED]->(n)""",
             {"q": question, "a": answer, "s": session, "agent": agent, "now": now(), "used": used})
-    if "remember" in tool_names and not any(s["tool"] == "remember" for s in steps):
-        consolidate(run, ctx, question, answer)
-    return {"answer": answer, "steps": steps, "graph": run.view()}
+    if agent in ("analyst", "reviewer") and not any(s["tool"] == "remember" for s in steps):
+        consolidate(run, ctx, question, answer, usage)
+    return {"answer": answer, "steps": steps, "graph": run.view(), "tokens": usage[0]}
 
 
 CONSOLIDATE = """From this Q&A about a codebase, extract at most 2 durable, non-obvious facts worth remembering in future
 sessions: who owns or knows some code, why a design is the way it is, or a risk. Each fact must be stated in the answer
-with its evidence (PR/issue numbers). Return JSON {{"facts": [{{"fact": "...", "about": ["function, file, @login or PR number"]}}]}},
+with its evidence (merged PR/issue numbers) and be about the existing code, its history or its people; never record
+what a pending, unmerged PR under review does. Return JSON {{"facts": [{{"fact": "...", "about": ["function, file, @login or PR number"]}}]}},
 or {{"facts": []}} if nothing qualifies.
 
 Q: {q}
@@ -262,28 +295,31 @@ Q: {q}
 A: {a}"""
 
 
-def consolidate(run, ctx, question, answer):
+def consolidate(run, ctx, question, answer, usage):
     """Episodic -> semantic memory: distil durable Facts from the answer, linked to the entities they are about."""
     try:
-        r = LLM.chat.completions.create(model=MODEL, temperature=0, response_format={"type": "json_object"},
-                                        messages=[{"role": "user", "content": CONSOLIDATE.format(q=question, a=answer)}])
-        for f in json.loads(r.choices[0].message.content).get("facts", [])[:2]:
+        m = chat(usage, response_format={"type": "json_object"},
+                 messages=[{"role": "user", "content": CONSOLIDATE.format(q=question, a=answer)}])
+        for f in json.loads(m.content).get("facts", [])[:2]:
             remember(run, ctx, f["fact"], f["about"])
     except Exception:  # memory is best-effort; never fail the answer over it
         pass
 
 
-def review_pr(repo, number, title, changed):
+def review_pr(repo, number, title, body, changed, paths):
     """Three agents review a PR, handing off through a Task node in the graph rather than in Python memory."""
-    task = f"pr-{number}"
+    task = f"pr-{number}@{now()}"  # one Task per review run; earlier runs stay as history
     g = graph(repo)
     g.query("""MERGE (t:Task {key: $task}) SET t.kind = 'pr_review', t.pr = $n, t.title = $title, t.created_at = $now
                WITH t UNWIND $changed AS q MATCH (f:Function {qname: q}) MERGE (t)-[:TARGETS]->(f)""",
             {"task": task, "n": number, "title": title, "changed": changed, "now": now()})
-    brief = f"PR #{number} '{title}' changes these functions: {', '.join(changed) or '(no Python functions)'}."
+    code = [q for q in changed if "test" not in q.split("::")[0]]
+    brief = (f"PR #{number} '{title}'.\nDescription: {(body or '(none)')[:800]}\nChanged files: {', '.join(paths)}\n"
+             f"Changed functions: {', '.join(code[:12]) or '(none in Python code)'}\n"
+             f"Changed test functions: {len(changed) - len(code)}")
     results = {}
     for agent in ("impact", "historian", "reviewer"):
-        out = ask(repo, brief, session=f"{task}:{agent}", agent=agent, task=task)
+        out = ask(repo, brief, session=f"{task}:{agent}", agent=agent, task=task, max_steps=5)
         g.query("""MATCH (t:Task {key: $task}) CREATE (n:Note {agent: $agent, text: $text, created_at: $now})-[:FOR]->(t)""",
                 {"task": task, "agent": agent, "text": out["answer"], "now": now()})
         results[agent] = out

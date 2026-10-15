@@ -38,6 +38,9 @@
   form.ask { display:flex; gap:8px; padding:12px 16px; border-top:1px solid var(--line); }
   form.ask textarea { flex:1; resize:none; height:42px; }
   .agent { border-left:3px solid var(--accent); } .agent h3 { margin:0 0 6px; font-size:13px; text-transform:uppercase; letter-spacing:.05em; color:var(--accent); }
+  .fact { cursor:default; margin-bottom:10px; } .fact .muted { margin-top:6px; }
+  .badge { font-size:11px; padding:1px 7px; border-radius:999px; background:#1f3a2e; color:#9ece6a; }
+  .badge.stale { background:#3d2a1a; color:var(--warn); }
   #right { position:relative; min-height:0; } #graph { position:absolute; inset:0; }
   #legend { position:absolute; left:12px; bottom:12px; display:flex; gap:10px; flex-wrap:wrap; font-size:12px; background:#0f1117cc; padding:6px 10px; border-radius:6px; }
   #legend i { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:4px; vertical-align:-1px; }
@@ -63,6 +66,7 @@
     <div class="tabs">
       <button class="on" data-tab="chat">Ask</button>
       <button data-tab="review">PR review (3 agents)</button>
+      <button data-tab="memory">Memory</button>
     </div>
     <div class="pane" id="chat">
       <div id="log"></div>
@@ -76,9 +80,13 @@
       <form class="ask" id="reviewForm" style="border-top:none;border-bottom:1px solid var(--line);align-items:center">
         <label>PR # <input id="prNum" type="number" min="1" required style="width:100px"></label>
         <label class="muted"><input type="checkbox" id="post"> post comment on GitHub</label>
+        <input id="reviewKey" type="password" placeholder="review key" aria-label="Review key (needed to post)" size="10">
         <button class="primary">Run review</button>
       </form>
       <div id="reviewOut"><p class="muted">The impact agent maps the blast radius, the historian digs up past decisions, and the reviewer picks people and writes the comment. They hand off through Task and Note nodes in the graph.</p></div>
+    </div>
+    <div class="pane" id="memory" hidden>
+      <div id="memoryOut" style="flex:1;overflow-y:auto;padding:16px"></div>
     </div>
   </section>
   <section id="right">
@@ -189,13 +197,30 @@ document.querySelector('.tabs').onclick = e => {
   const t = e.target.dataset.tab; if (!t) return;
   document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b === e.target));
   document.querySelectorAll('.pane').forEach(p => p.hidden = p.id !== t);
+  if (t === 'memory') loadMemory();
 };
+
+// ---- memory ----
+async function loadMemory() {
+  if (!repo) return;
+  $('#memoryOut').innerHTML = '<p class="muted">Loading…</p>';
+  try {
+    const m = await api('/api/memory?repo=' + encodeURIComponent(repo));
+    const stale = m.facts.filter(f => f.stale).length;
+    $('#memoryOut').innerHTML = `<p class="muted">${m.facts.length} facts (${stale} stale) · ${m.episodes} past questions · ${m.tasks} agent tasks. ` +
+      `Facts are linked to the code they're about; a fact turns stale when that code's AST fingerprint changes or a later PR touches it.</p>` +
+      (m.facts.map(f => `<div class="msg bot fact"><div>${f.stale ? '<span class="badge stale">stale: code changed</span> ' : '<span class="badge">current</span> '}${esc(f.text)}</div>` +
+        `<div class="muted">about ${f.about.map(a => `<code>${esc(a)}</code>`).join(' ')} · learned by ${esc(f.agent)} agent, ${new Date(f.created_at).toLocaleString()}</div></div>`).join('')
+       || '<p class="muted">Nothing learned yet. Ask a question in the Ask tab.</p>');
+    show(m.graph, 'Memory: facts and the code they are about');
+  } catch (err) { $('#memoryOut').innerHTML = `<p style="color:var(--warn)">${esc(err.message)}</p>`; }
+}
 $('#reviewForm').onsubmit = async e => {
   e.preventDefault();
   const btn = e.target.querySelector('button'); btn.disabled = true;
   $('#reviewOut').innerHTML = '<p class="muted">Impact → Historian → Reviewer, handing off through the graph… (about 30–60s)</p>';
   try {
-    const r = await api('/api/review', { repo, pr:+$('#prNum').value, post:$('#post').checked });
+    const r = await api('/api/review', { repo, pr:+$('#prNum').value, post:$('#post').checked, key:$('#reviewKey').value });
     const graphs = [];
     $('#reviewOut').innerHTML = `<p class="muted">Changed functions: ${esc(r.changed.join(', ') || 'none found')}</p>` +
       Object.entries(r.agents).map(([name, a]) => { graphs.push(a.graph); return `<div class="msg bot agent"><h3>${esc(name)} agent</h3>${md(a.answer)}${stepsHtml(a.steps)}</div>`; }).join('') +

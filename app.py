@@ -1,4 +1,5 @@
 """HTTP API and the single-page UI. Run: uv run uvicorn app:app --reload"""
+import hmac
 import os
 import re
 import threading
@@ -16,6 +17,7 @@ from graph import Run, graph, repos
 app = FastAPI(title="RepoBrain")
 STATIC = Path(__file__).parent / "static"
 POST_OWNERS = {o.strip().lower() for o in os.environ.get("POST_OWNERS", "").split(",") if o.strip()}
+REVIEW_KEY = os.environ.get("REVIEW_KEY", "")
 ingest_lock = threading.Lock()  # ponytail: one ingest at a time per process, a job queue if many users ingest at once
 
 
@@ -95,28 +97,49 @@ def overview(repo: str):
     return run.view()
 
 
+@app.get("/api/memory")
+def memory(repo: str):
+    """What the agents have learned: Facts with what they're about and whether the code changed since."""
+    g = graph(repo_name(repo))
+    run = Run(g)
+    run.query("MATCH p = (:Fact)-[:ABOUT]->() RETURN p LIMIT 150")
+    facts = g.ro_query("""MATCH (m:Fact)-[a:ABOUT]->(t)
+                          OPTIONAL MATCH (t)<-[:MODIFIED|TOUCHED]-(pr:PR) WHERE pr.merged_at > m.created_at
+                          WITH m, collect(DISTINCT coalesce(t.qname, t.path, '@' + t.login, '#' + toString(t.number))) AS about,
+                               max(CASE WHEN (a.hash IS NOT NULL AND a.hash <> t.hash) OR pr IS NOT NULL THEN 1 ELSE 0 END) AS stale
+                          RETURN m.text, m.agent, m.session, m.created_at, about, stale = 1
+                          ORDER BY m.created_at DESC LIMIT 100""").result_set
+    counts = g.ro_query("""OPTIONAL MATCH (e:Episode) WITH count(e) AS episodes
+                           OPTIONAL MATCH (t:Task) RETURN episodes, count(t) AS tasks""").result_set[0]
+    return {"facts": [dict(zip(("text", "agent", "session", "created_at", "about", "stale"), f)) for f in facts],
+            "episodes": counts[0], "tasks": counts[1], "graph": run.view()}
+
+
 class ReviewReq(BaseModel):
     repo: str
     pr: int
     post: bool = False
+    key: str = ""  # must match REVIEW_KEY to post a comment
 
 
 @app.post("/api/review")
 def review(req: ReviewReq):
     repo = repo_name(req.repo)
-    if req.post and repo.split("/")[0].lower() not in POST_OWNERS:
-        raise HTTPException(403, "Posting comments is only enabled for repos listed in POST_OWNERS")
+    if req.post and (repo.split("/")[0].lower() not in POST_OWNERS
+                     or not REVIEW_KEY or not hmac.compare_digest(req.key, REVIEW_KEY)):
+        raise HTTPException(403, "Posting needs the review key and a repo owner listed in POST_OWNERS")
     with ingest.gh() as c:
         pr = c.get(f"/repos/{repo}/pulls/{req.pr}")
         if not pr.is_success:
             raise HTTPException(404, f"PR #{req.pr} not found in {repo}")
         files = c.get(f"/repos/{repo}/pulls/{req.pr}/files", params={"per_page": 100}).json()
         paths = [f["filename"] for f in files]
-        funcs = graph(repo).ro_query("MATCH (f:Function) WHERE f.path IN $paths RETURN f.qname, f.name, f.path",
+        funcs = graph(repo).ro_query("MATCH (f:Function) WHERE f.path IN $paths RETURN f.qname, f.path, f.line, f.end_line",
                                      {"paths": paths}).result_set
-        changed = [q for f in files for q in ingest.changed_functions(
-            f.get("patch"), [{"qname": q, "name": n} for q, n, p in funcs if p == f["filename"]])]
-        results = agent.review_pr(repo, req.pr, pr.json()["title"], changed)
+        # an open PR's diff is against the base branch, which is what the graph holds, so line ranges are exact
+        changed = sorted({q for f in files for n in ingest.changed_lines(f.get("patch"))
+                          for q, p, start, end in funcs if p == f["filename"] and start <= n <= end})
+        results = agent.review_pr(repo, req.pr, pr.json()["title"], pr.json()["body"], changed, paths)
         comment = results["reviewer"]["answer"]
         posted = None
         if req.post:
