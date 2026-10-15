@@ -5,7 +5,8 @@ import threading
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+from openai import APIError
 from pydantic import BaseModel
 
 import agent
@@ -16,6 +17,11 @@ app = FastAPI(title="RepoBrain")
 STATIC = Path(__file__).parent / "static"
 POST_OWNERS = {o.strip().lower() for o in os.environ.get("POST_OWNERS", "").split(",") if o.strip()}
 ingest_lock = threading.Lock()  # ponytail: one ingest at a time per process, a job queue if many users ingest at once
+
+
+@app.exception_handler(APIError)
+def llm_error(request, exc):
+    return JSONResponse({"detail": f"LLM call failed: {exc.message}"}, status_code=502)
 
 
 def repo_name(raw: str) -> str:
