@@ -8,13 +8,14 @@ import os
 import re
 from datetime import datetime, timezone
 
-from openai import BadRequestError, OpenAI
+from openai import BadRequestError, OpenAI, RateLimitError
 
 from graph import Run, graph
 
 LLM = OpenAI(base_url=os.environ.get("LLM_BASE_URL", "https://api.groq.com/openai/v1"),
-             api_key=os.environ.get("LLM_API_KEY", "missing"))
+             api_key=os.environ.get("LLM_API_KEY", "missing"), max_retries=5)
 MODEL = os.environ.get("LLM_MODEL", "openai/gpt-oss-120b")
+FALLBACK = os.environ.get("LLM_FALLBACK_MODEL", "openai/gpt-oss-20b")  # separate rate-limit bucket on Groq
 
 
 def match(p: str) -> str:
@@ -35,11 +36,26 @@ def words(text: str) -> str:
 
 def search(run, ctx, text):
     return run.query(
-        """MATCH (t:Function) WHERE toLower(t.qname) CONTAINS toLower($text) RETURN t AS hit LIMIT 8
-           UNION MATCH (t:File) WHERE toLower(t.path) CONTAINS toLower($text) RETURN t AS hit LIMIT 5
-           UNION CALL db.idx.fulltext.queryNodes('PR', $words) YIELD node RETURN node AS hit LIMIT 6
-           UNION CALL db.idx.fulltext.queryNodes('Issue', $words) YIELD node RETURN node AS hit LIMIT 6""",
+        """MATCH (t:Function) WHERE toLower(t.qname) CONTAINS toLower($text)
+             RETURN t AS hit, 'lines ' + toString(t.line) + '-' + toString(t.end_line) + ': ' + t.doc AS info LIMIT 8
+           UNION MATCH (t:File) WHERE toLower(t.path) CONTAINS toLower($text) RETURN t AS hit, toString(t.loc) + ' lines' AS info LIMIT 5
+           UNION CALL db.idx.fulltext.queryNodes('PR', $words) YIELD node RETURN node AS hit, 'merged ' + node.merged_at AS info LIMIT 6
+           UNION CALL db.idx.fulltext.queryNodes('Issue', $words) YIELD node RETURN node AS hit, node.state AS info LIMIT 6""",
         {"text": text.strip(), "words": words(text)})
+
+
+def facts_about(run, name):
+    """Facts learned earlier about an entity; changed_since lists PRs merged after the fact was learned (= maybe stale)."""
+    return run.query(f"""MATCH (t) WHERE {match('$name')} MATCH (m:Fact)-[:ABOUT]->(t)
+                         OPTIONAL MATCH (t)<-[:MODIFIED|TOUCHED]-(pr:PR) WHERE pr.merged_at > m.created_at
+                         RETURN m.text AS fact, m.agent AS by, m.created_at AS learned, collect(pr.number) AS changed_since
+                         ORDER BY learned DESC LIMIT 8""", {"name": clean(name)})
+
+
+def with_memory(run, name, out):
+    """Memory surfaces wherever an entity is looked at, not only when the model remembers to call recall."""
+    facts = facts_about(run, name)
+    return out if facts == "(no results)" else f"{out}\n\nFrom memory (earlier sessions):\n{facts}"
 
 
 def impact(run, ctx, name):
@@ -51,23 +67,24 @@ def impact(run, ctx, name):
                                    collect(DISTINCT c.path)[..12] AS files""", p)
     issues = run.query(f"""MATCH (t) WHERE {match('$name')} MATCH (c:Function)-[:CALLS*0..3]->(t)
                            MATCH p = (i:Issue {{state: 'OPEN'}})-[:MENTIONS]->(c) RETURN DISTINCT p LIMIT 5""", p)
-    return f"Call paths into it (non-test):\n{paths}\n\nCallers by kind:\n{summary}\n\nOpen issues touching the blast radius:\n{issues}"
+    return with_memory(run, name, f"Call paths into it (non-test):\n{paths}\n\nCallers by kind:\n{summary}\n\n"
+                                  f"Open issues touching the blast radius:\n{issues}")
 
 
 def experts(run, ctx, name):
-    return run.query(f"""MATCH (t) WHERE {match('$name')}
+    return with_memory(run, name, run.query(f"""MATCH (t) WHERE {match('$name')}
                          MATCH p = (u:Person)-[:AUTHORED|REVIEWED]->(pr:PR)-[:MODIFIED|TOUCHED]->(t)
                          WITH u, count(DISTINCT pr) AS prs, max(pr.merged_at) AS last_change, collect(p)[0] AS example
                          RETURN u.login AS person, prs, last_change, example ORDER BY prs DESC LIMIT 6""",
-                     {"name": clean(name)})
+                     {"name": clean(name)}))
 
 
 def history(run, ctx, name):
-    return run.query(f"""MATCH (t) WHERE {match('$name')}
-                         MATCH p = (pr:PR)-[:MODIFIED|TOUCHED]->(t)
+    return with_memory(run, name, run.query(f"""MATCH (t) WHERE {match('$name')}
+                         MATCH p = (a:Person)-[:AUTHORED]->(pr:PR)-[:MODIFIED|TOUCHED]->(t)
                          OPTIONAL MATCH q = (pr)-[:FIXES]->(i:Issue)
-                         RETURN p, q, pr.merged_at AS merged, left(pr.body, 500) AS pr_text, left(i.body, 300) AS issue_text
-                         ORDER BY merged DESC LIMIT 6""", {"name": clean(name)})
+                         RETURN pr.number AS pr, a.login AS pr_author, p, q, pr.merged_at AS merged, left(pr.body, 500) AS pr_text, left(i.body, 300) AS issue_text
+                         ORDER BY merged DESC LIMIT 6""", {"name": clean(name)}))
 
 
 def critical(run, ctx):
@@ -91,10 +108,7 @@ def connect(run, ctx, a, b):
 
 def recall(run, ctx, name):
     p = {"name": clean(name), "words": words(name)}
-    facts = run.query(f"""MATCH (t) WHERE {match('$name')} MATCH (m:Fact)-[:ABOUT]->(t)
-                          OPTIONAL MATCH (t)<-[:MODIFIED|TOUCHED]-(pr:PR) WHERE pr.merged_at > m.created_at
-                          RETURN m.text AS fact, m.agent AS by, m.created_at AS learned, collect(pr.number) AS changed_since
-                          ORDER BY learned DESC LIMIT 8""", p)
+    facts = facts_about(run, name)
     if facts == "(no results)":
         facts = run.query("""CALL db.idx.fulltext.queryNodes('Fact', $words) YIELD node
                              RETURN node.text AS fact, node.agent AS by, node.created_at AS learned LIMIT 5""", p)
@@ -159,9 +173,12 @@ SYSTEM = """You are RepoBrain, an engineering agent for the GitHub repo {repo}. 
 and your own long-term memory are a FalkorDB graph you query through tools. {role}
 Rules:
 - Answer only from tool results. Never invent names, numbers or reasons; say what the graph does not show.
-- Check `recall` for the main entity first: you may have learned about it in an earlier session.
-- Cite evidence inline: PR #N, Issue #N, @login, file paths, Class.method names.
-- When you learn something durable and non-obvious (an owner, why a decision was made, a risk), `remember` it.
+  Only say someone authored or reviewed a PR if a tool result shows that exact Person-AUTHORED/REVIEWED->PR link.
+- Tool results may include "From memory" facts from earlier sessions: use them, and say so if `changed_since`
+  lists PRs (the code changed after the fact was learned, so it may be stale).
+- Cite evidence inline as plain text: PR #N, Issue #N, @login, file paths, Class.method names. No 【】 markers.
+- Before your final answer, if you found an owner, the reason behind a design, or a risk, save it once with `remember`.
+- Search once, then pass the exact qname to history/experts/impact. Use `cypher` only when no other tool fits.
 - Be concise: the answer first, then a few evidence bullets."""
 
 ROLES = {
@@ -192,21 +209,26 @@ def ask(repo, question, session="default", agent="analyst", task=None):
         msgs += [{"role": "user", "content": q}, {"role": "assistant", "content": a}]
     msgs.append({"role": "user", "content": question})
 
-    steps, answer = [], ""
-    for _ in range(10):
+    steps, answer, model = [], "", MODEL
+    for _ in range(8):
         try:
-            m = LLM.chat.completions.create(model=MODEL, messages=msgs, tools=[spec(t) for t in tool_names],
-                                            temperature=0.2).choices[0].message
+            m = LLM.chat.completions.create(model=model, messages=msgs, tools=[spec(t) for t in tool_names],
+                                            temperature=0).choices[0].message
+        except RateLimitError:
+            if model == FALLBACK:
+                raise
+            model = FALLBACK
+            continue
         except BadRequestError as e:  # the model sometimes emits a malformed tool call; tell it and retry
             msgs.append({"role": "user", "content": f"Your last tool call was malformed ({str(e)[:200]}). Try again."})
             continue
         if not m.tool_calls:
-            answer = m.content or ""
+            answer = re.sub(r"\s*【[^】]*】", "", m.content or "")
             break
         msgs.append({"role": "assistant", "content": m.content or "",
                      "tool_calls": [tc.model_dump(include={"id", "type", "function"}) for tc in m.tool_calls]})
         for tc in m.tool_calls:
-            name, args = tc.function.name, {}
+            name, args, start = tc.function.name, {}, len(run.log)
             try:
                 args = json.loads(tc.function.arguments or "{}")
                 if name not in tool_names:
@@ -214,17 +236,41 @@ def ask(repo, question, session="default", agent="analyst", task=None):
                 out = TOOLS[name][0](run, ctx, **args)
             except Exception as e:  # errors go back to the model so it can fix its call
                 out = f"ERROR: {e}"
-            steps.append({"tool": name, "args": args, "result": out[:3000],
-                          "cypher": run.log[-3:] if name != "connect" else run.log[-1:]})
-            msgs.append({"role": "tool", "tool_call_id": tc.id, "content": out[:6000]})
-    else:
-        answer = answer or "I ran out of steps before reaching an answer."
+            steps.append({"tool": name, "args": args, "result": out[:3000], "cypher": run.log[start:][-4:]})
+            msgs.append({"role": "tool", "tool_call_id": tc.id, "content": out[:4000]})
+    else:  # out of steps: answer with what was gathered instead of giving up
+        msgs.append({"role": "user", "content": "Stop calling tools. Answer now from the tool results above."})
+        answer = re.sub(r"\s*【[^】]*】", "", LLM.chat.completions.create(model=model, messages=msgs, temperature=0)
+                        .choices[0].message.content or "")
 
     used = [i for i, n in run.nodes.items() if n.labels[0] in ("Function", "File", "PR", "Issue", "Person")]
     g.query("""CREATE (e:Episode {question: $q, answer: $a, session: $s, agent: $agent, created_at: $now})
                WITH e UNWIND $used AS id MATCH (n) WHERE id(n) = id MERGE (e)-[:USED]->(n)""",
             {"q": question, "a": answer, "s": session, "agent": agent, "now": now(), "used": used})
+    if "remember" in tool_names and not any(s["tool"] == "remember" for s in steps):
+        consolidate(run, ctx, question, answer)
     return {"answer": answer, "steps": steps, "graph": run.view()}
+
+
+CONSOLIDATE = """From this Q&A about a codebase, extract at most 2 durable, non-obvious facts worth remembering in future
+sessions: who owns or knows some code, why a design is the way it is, or a risk. Each fact must be stated in the answer
+with its evidence (PR/issue numbers). Return JSON {{"facts": [{{"fact": "...", "about": ["function, file, @login or PR number"]}}]}},
+or {{"facts": []}} if nothing qualifies.
+
+Q: {q}
+
+A: {a}"""
+
+
+def consolidate(run, ctx, question, answer):
+    """Episodic -> semantic memory: distil durable Facts from the answer, linked to the entities they are about."""
+    try:
+        r = LLM.chat.completions.create(model=MODEL, temperature=0, response_format={"type": "json_object"},
+                                        messages=[{"role": "user", "content": CONSOLIDATE.format(q=question, a=answer)}])
+        for f in json.loads(r.choices[0].message.content).get("facts", [])[:2]:
+            remember(run, ctx, f["fact"], f["about"])
+    except Exception:  # memory is best-effort; never fail the answer over it
+        pass
 
 
 def review_pr(repo, number, title, changed):
