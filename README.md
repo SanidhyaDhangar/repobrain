@@ -93,7 +93,7 @@ uv run python test_ingest.py                                  # parser self-chec
 
 | Env var | Meaning |
 |---|---|
-| `FALKORDB_URL` | `falkor://user:pass@host:port` (`falkors://` for TLS) |
+| `FALKORDB_URL` | `falkor://user:pass@host:port` (`falkors://` for TLS). If it is unreachable on Linux, the app starts an embedded FalkorDB (Redis 8 from conda-forge + the module from `falkordblite`) preloaded with `snapshot.rdb`; the live demo runs this way |
 | `LLM_API_KEY` | Groq API key |
 | `LLM_MODEL` / `LLM2_MODEL` | primary model (default `openai/gpt-oss-120b`), fallback when rate limited (default `openai/gpt-oss-20b`) |
 | `LLM_BASE_URL` / `LLM2_BASE_URL` / `LLM2_API_KEY` | OpenAI-compatible endpoints; default to Groq and the primary key |

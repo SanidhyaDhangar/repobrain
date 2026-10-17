@@ -14,9 +14,10 @@ from pydantic import BaseModel
 
 import agent
 import ingest
-from graph import Run, graph, repos
+from graph import DBDown, Run, db, graph, repos
 
 app = FastAPI(title="RepoBrain")
+threading.Thread(target=db, daemon=True).start()  # connect (or boot the embedded fallback) before the first request
 STATIC = Path(__file__).parent / "static"
 POST_OWNERS = {o.strip().lower() for o in os.environ.get("POST_OWNERS", "").split(",") if o.strip()}
 REVIEW_KEY = os.environ.get("REVIEW_KEY", "")
@@ -26,6 +27,11 @@ ingest_lock = threading.Lock()  # ponytail: one ingest at a time per process, a 
 @app.exception_handler(APIError)
 def llm_error(request, exc):
     return JSONResponse({"detail": f"LLM call failed: {exc.message}"}, status_code=502)
+
+
+@app.exception_handler(DBDown)
+def db_error(request, exc):
+    return JSONResponse({"detail": f"FalkorDB unavailable: {exc}"}, status_code=503)
 
 
 def repo_name(raw: str) -> str:

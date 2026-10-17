@@ -1,17 +1,83 @@
 """FalkorDB connection, plus turning query results into text (for the LLM) and nodes/edges (for the UI)."""
+import atexit
+import io
 import os
-from functools import cache
+import platform
+import subprocess
+import sys
+import tarfile
+import threading
+import time
+import zipfile
+from pathlib import Path as FilePath
 from urllib.parse import urlparse
 
+import httpx
+import zstandard
 from falkordb import Edge, FalkorDB, Node, Path
+from redis.exceptions import ConnectionError as DBDown
+
+# Embedded fallback: Redis 8 + its libs from conda-forge (built for glibc 2.17, so it runs on Render's native runtime,
+# unlike falkordblite's own redis-server), plus the FalkorDB module from the falkordblite wheel.
+CONDA = "https://conda.anaconda.org/conda-forge/linux-64/"
+EMBED_PKGS = [CONDA + p for p in ("redis-server-8.6.2-h9a70dda_0.conda", "libstdcxx-16.2.0-h934c35e_7.conda",
+                                  "libgcc-16.2.0-ha9f2e26_7.conda", "libjemalloc-5.3.0-h5888daf_1.conda",
+                                  "openssl-3.5.9-h781a0a9_0.conda")]
+FALKORDBLITE = ("https://files.pythonhosted.org/packages/8a/5e/d343c5249bd24c6614e8c1b718a73bb9f68beb2cf90464bc51c9436d25af/"
+                "falkordblite-0.10.0-cp312-cp312-manylinux_2_39_x86_64.whl")
+SNAPSHOT = FilePath(__file__).with_name("snapshot.rdb")
+_db, _lock = None, threading.Lock()
 
 
-@cache
 def db():
+    global _db
+    with _lock:
+        if _db is None:
+            _db = _connect()
+    return _db
+
+
+def _connect():
     # Not FalkorDB.from_url: with redis-py 8 it opens a RESP3 pool that drops replies mid-read.
     u = urlparse(os.environ.get("FALKORDB_URL", "falkor://localhost:6379"))
-    return FalkorDB(host=u.hostname, port=u.port or 6379, username=u.username or None, password=u.password,
-                    ssl=u.scheme == "falkors")
+    try:  # the constructor already connects
+        return FalkorDB(host=u.hostname, port=u.port or 6379, username=u.username or None, password=u.password,
+                        ssl=u.scheme == "falkors", socket_connect_timeout=5)
+    except DBDown as e:
+        if sys.platform != "linux":
+            raise
+        print(f"FalkorDB at {u.hostname} unreachable ({e}), starting embedded FalkorDB from {SNAPSHOT.name}", flush=True)
+        return FalkorDB(host="127.0.0.1", port=embedded())
+
+
+def embedded(port=6390, root=FilePath("/tmp/falkordb")):
+    """Run FalkorDB next to the app, preloaded with snapshot.rdb. What's written at runtime lasts until restart."""
+    server, module = root / "bin/redis-server", root / "redislite/bin/falkordb.so"
+    if not module.exists():
+        for url in EMBED_PKGS:  # .conda = zip holding pkg-*.tar.zst
+            z = zipfile.ZipFile(io.BytesIO(httpx.get(url, follow_redirects=True, timeout=120).content))
+            pkg = next(n for n in z.namelist() if n.startswith("pkg-"))
+            with tarfile.open(fileobj=zstandard.ZstdDecompressor().stream_reader(io.BytesIO(z.read(pkg))), mode="r|") as t:
+                t.extractall(root, filter="tar")
+        whl = zipfile.ZipFile(io.BytesIO(httpx.get(FALKORDBLITE, timeout=120).content))
+        for n in whl.namelist():
+            if n == "redislite/bin/falkordb.so" or n.startswith("falkordblite.libs/"):
+                whl.extract(n, root)
+        module.chmod(0o755)
+    log = root / "redis.log"
+    proc = subprocess.Popen([server, "--port", str(port), "--bind", "127.0.0.1", "--save", "", "--dir", SNAPSHOT.parent,
+                             "--dbfilename", SNAPSHOT.name, "--loadmodule", module, "THREAD_COUNT", "2",
+                             "OMP_THREAD_COUNT", "1"], stdout=log.open("w"), stderr=subprocess.STDOUT)
+    atexit.register(proc.terminate)
+    for _ in range(120):
+        if proc.poll() is not None:
+            raise DBDown(f"embedded FalkorDB exited ({platform.libc_ver()}): {log.read_text()[-800:]}")
+        try:
+            FalkorDB(host="127.0.0.1", port=port).connection.ping()  # BusyLoadingError while the snapshot loads
+            return port
+        except DBDown:
+            time.sleep(0.5)
+    raise DBDown("embedded FalkorDB did not start in 60s")
 
 
 def graph(repo: str):

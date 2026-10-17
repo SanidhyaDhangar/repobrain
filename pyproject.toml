@@ -11,4 +11,5 @@ dependencies = [
     "mcp>=2.3.0",
     "openai>=3.31.0",
     "uvicorn[standard]>=0.54.0",
+    "zstandard>=0.25.0",
 ]
