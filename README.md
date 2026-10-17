@@ -4,6 +4,8 @@
 
 Point RepoBrain at any public GitHub repo. It builds one FalkorDB graph from the code (files, functions, calls, imports), its history (merged PRs, the issues they fixed, open issues), the people behind it, and everything its agents learn. LLM agents then answer questions and review PRs by traversing that graph. Every answer shows the exact Cypher queries and the subgraph behind it.
 
+**Live demo:** https://repobrain-j9c4.onrender.com (free tier: the first request after idle takes about a minute to wake up)
+
 Built for **Graph Hacks: Context for AI Agents** (WeMakeDevs × FalkorDB, Oct 2026). Entered in all three tracks:
 
 | Track | What RepoBrain does |

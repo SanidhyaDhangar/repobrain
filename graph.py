@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 import httpx
 import zstandard
 from falkordb import Edge, FalkorDB, Node, Path
-from redis.exceptions import ConnectionError as DBDown
+from redis.exceptions import RedisError as DBDown  # also TimeoutError, which is not a ConnectionError
 
 # Embedded fallback: Redis 8 + its libs from conda-forge (built for glibc 2.17, so it runs on Render's native runtime,
 # unlike falkordblite's own redis-server), plus the FalkorDB module from the falkordblite wheel.

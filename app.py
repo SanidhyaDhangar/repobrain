@@ -31,7 +31,7 @@ def llm_error(request, exc):
 
 @app.exception_handler(DBDown)
 def db_error(request, exc):
-    return JSONResponse({"detail": f"FalkorDB unavailable: {exc}"}, status_code=503)
+    return JSONResponse({"detail": f"FalkorDB error: {exc}"}, status_code=503)
 
 
 def repo_name(raw: str) -> str:
@@ -69,8 +69,12 @@ def index():
 
 @app.get("/api/repos")
 def list_repos():
+    try:
+        names = repos()
+    except DBDown:  # stay up for Render's health check; every other endpoint reports the error
+        return []
     out = []
-    for r in repos():
+    for r in names:
         g = graph(r)
         row = g.ro_query("MATCH (r:Repo) RETURN r.status, r.synced_at, r.description, r.error, r.history_from LIMIT 1").result_set
         status, synced, desc, error, hist = row[0] if row else ("unknown", None, "", None, None)
