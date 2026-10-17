@@ -1,0 +1,17 @@
+# Render's free tier sleeps after 15 idle minutes, and a cold start (wake + embedded FalkorDB boot) takes over a minute.
+# Ping the live demo so visitors get an instant page.
+name: Keep live demo awake
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: curl -sS -o /dev/null -w "%{http_code} in %{time_total}s\n" --max-time 240 https://repobrain-j9c4.onrender.com/api/repos
