@@ -79,6 +79,8 @@ Facts also come back automatically inside `impact`, `experts` and `history` resu
 2. **Historian**: reads the notes, then `history` on the changed code, flagging anything the PR might undo.
 3. **Reviewer**: reads both notes, picks human reviewers with `experts`, and writes the PR comment, which is posted to GitHub when enabled.
 
+See it on a real pull request: [SanidhyaDhangar/flask#1](https://github.com/SanidhyaDhangar/flask/pull/1), where the GitHub Action in [`examples/repobrain-review.yml`](examples/repobrain-review.yml) posted the review automatically.
+
 ## Run it locally
 
 Needs Python 3.11+, [uv](https://docs.astral.sh/uv/), a FalkorDB instance, and a [Groq](https://console.groq.com) API key (any OpenAI-compatible endpoint works).
