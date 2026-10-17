@@ -17,12 +17,12 @@ import zstandard
 from falkordb import Edge, FalkorDB, Node, Path
 from redis.exceptions import RedisError as DBDown  # also TimeoutError, which is not a ConnectionError
 
-# Embedded fallback: Redis 8 + its libs from conda-forge (built for glibc 2.17, so it runs on Render's native runtime,
-# unlike falkordblite's own redis-server), plus the FalkorDB module from the falkordblite wheel.
+# Embedded fallback: Redis 8 + its libs from conda-forge (built for glibc 2.17; Render's native runtime has 2.36,
+# too old for falkordblite's redis-server and bundled libs, which need 2.38), plus the FalkorDB module from falkordblite.
 CONDA = "https://conda.anaconda.org/conda-forge/linux-64/"
 EMBED_PKGS = [CONDA + p for p in ("redis-server-8.6.2-h9a70dda_0.conda", "libstdcxx-16.2.0-h934c35e_7.conda",
-                                  "libgcc-16.2.0-ha9f2e26_7.conda", "libjemalloc-5.3.0-h5888daf_1.conda",
-                                  "openssl-3.5.9-h781a0a9_0.conda")]
+                                  "libgcc-16.2.0-ha9f2e26_7.conda", "libgomp-16.2.0-he0feb66_7.conda",
+                                  "libjemalloc-5.3.0-h5888daf_1.conda", "openssl-3.5.9-h781a0a9_0.conda")]
 FALKORDBLITE = ("https://files.pythonhosted.org/packages/8a/5e/d343c5249bd24c6614e8c1b718a73bb9f68beb2cf90464bc51c9436d25af/"
                 "falkordblite-0.10.0-cp312-cp312-manylinux_2_39_x86_64.whl")
 SNAPSHOT = FilePath(__file__).with_name("snapshot.rdb")
@@ -60,9 +60,12 @@ def embedded(port=6390, root=FilePath("/tmp/falkordb")):
             with tarfile.open(fileobj=zstandard.ZstdDecompressor().stream_reader(io.BytesIO(z.read(pkg))), mode="r|") as t:
                 t.extractall(root, filter="tar")
         whl = zipfile.ZipFile(io.BytesIO(httpx.get(FALKORDBLITE, timeout=120).content))
+        libs = root / "falkordblite.libs"  # the module's RPATH; point its bundled libssl/libcrypto/libgomp names at conda's
+        libs.mkdir(exist_ok=True)
         for n in whl.namelist():
-            if n == "redislite/bin/falkordb.so" or n.startswith("falkordblite.libs/"):
-                whl.extract(n, root)
+            if n.startswith("falkordblite.libs/lib"):
+                (libs / n.split("/")[-1]).symlink_to(next((root / "lib").glob(n.split("/")[-1].split("-")[0] + ".so.*")))
+        whl.extract("redislite/bin/falkordb.so", root)  # last: its presence marks a complete install
         module.chmod(0o755)
     log = root / "redis.log"
     proc = subprocess.Popen([server, "--port", str(port), "--bind", "127.0.0.1", "--save", "", "--dir", SNAPSHOT.parent,
