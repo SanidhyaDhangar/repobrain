@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#08090b">
 <title>RepoBrain</title>
 <meta name="description" content="An engineering agent that reasons over a FalkorDB graph of your repo: code, history, people and its own memory.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -62,6 +63,8 @@
   .spacer { flex: 1; }
   .session { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
   .session code { color: var(--text-2); }
+  .btn.icon { width: 34px; padding: 0; justify-content: center; }
+  #tab-graph, #addRepoBtn { display: none; }
 
   /* ---- layout ---- */
   .layout { flex: 1; display: grid; grid-template-columns: minmax(380px, 44%) 1fr; min-height: 0; }
@@ -69,6 +72,7 @@
   .tabs { position: relative; display: flex; gap: 4px; padding: 8px 12px 0; border-bottom: 1px solid var(--line); }
   .tabs button { background: none; border: 0; padding: 8px 12px 10px; color: var(--muted); font-weight: 500; display: inline-flex; gap: 7px; align-items: center; transition: color .15s; }
   .tabs button:hover, .tabs button[aria-selected="true"] { color: var(--text); }
+  .tabs button.new::after { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: pop .3s var(--ease) both; }
   .tab-ink { position: absolute; bottom: -1px; height: 2px; background: var(--accent); border-radius: 2px; transition: transform .3s var(--ease), width .3s var(--ease); }
   .pane { flex: 1; display: flex; flex-direction: column; min-height: 0; }
   .pane[hidden] { display: none; }
@@ -123,6 +127,7 @@
   .thinking .shimmer { background: linear-gradient(90deg, var(--muted) 20%, var(--text) 50%, var(--muted) 80%); background-size: 200% 100%;
                        -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 1.4s linear infinite; }
   .spin { width: 14px; height: 14px; border: 2px solid var(--line-2); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; flex: none; }
+  .answer-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
   details.cy { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 8px; }
   details.cy summary { cursor: pointer; color: var(--muted); font-size: 12px; list-style: none; display: flex; gap: 6px; align-items: center; }
   details.cy summary::before { content: "›"; transition: transform .2s; display: inline-block; }
@@ -213,6 +218,9 @@
   .inspector dt { color: var(--muted); } .inspector dd { margin: 0; color: var(--text-2); overflow-wrap: anywhere; }
   .inspector .row { display: flex; gap: 6px; }
   .kind { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
+  .graph-panel div.vis-tooltip { position: absolute; background: var(--raise); color: var(--text); border: 1px solid var(--line-2); border-radius: var(--radius-sm);
+                                 padding: 4px 9px; font: 12px/1.5 Inter, system-ui, sans-serif; white-space: nowrap; max-width: 360px; overflow: hidden;
+                                 text-overflow: ellipsis; box-shadow: 0 8px 24px rgba(0, 0, 0, .45); pointer-events: none; }
   .close { position: absolute; top: 10px; right: 10px; background: none; border: 0; color: var(--muted); padding: 4px; border-radius: 5px; }
   .close:hover { color: var(--text); background: var(--raise); }
   .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--raise); border: 1px solid var(--line-2); border-left: 3px solid var(--bad);
@@ -227,13 +235,58 @@
   @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(52, 211, 153, .55); } 70%, 100% { box-shadow: 0 0 0 7px rgba(52, 211, 153, 0); } }
   @keyframes pulse-warn { 0% { box-shadow: 0 0 0 0 rgba(245, 158, 11, .6); } 70%, 100% { box-shadow: 0 0 0 7px rgba(245, 158, 11, 0); } }
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
+  @media (hover: none) { .hint { display: none; } }
+  /* Narrow screens: one full-height view at a time, the graph becomes a fourth tab. */
   @media (max-width: 860px) {
-    body { overflow: auto; }
-    .layout { grid-template-columns: 1fr; grid-template-rows: auto 55vh; }
-    .left { border-right: 0; border-bottom: 1px solid var(--line); min-height: 70vh; }
+    body { height: 100vh; height: 100dvh; }
+    .topbar { padding: 8px 12px; gap: 8px; }
+    .topbar > .field { flex: 1 1 180px; min-width: 0; }
+    .field input { width: 100%; }
+    .session { display: none; }
+    .brand { order: 0; } .status { order: 1; margin-left: auto; } #ghLink { order: 1; }
+    .spacer { order: 2; flex-basis: 100%; height: 0; } /* line break: fields go on row 2 */
+    .topbar > label.field { order: 3; } #ingestForm { order: 4; flex: 2 1 240px; }
+    .layout { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+    .left { display: contents; }
+    .tabs { grid-row: 1; background: var(--panel); padding: 4px 8px 0; }
+    .tabs button { flex: 1; justify-content: center; padding: 8px 4px 10px; white-space: nowrap; }
+    #tab-graph { display: inline-flex; }
+    .pane, .graph-panel { grid-row: 2; grid-column: 1; min-height: 0; }
+    .pane { background: var(--panel); }
+    .graph-panel { display: none; }
+    body[data-tab="graph"] .graph-panel { display: block; }
+    .scroll { padding: 16px; }
+    .empty { margin-top: 2vh; }
     .suggest { grid-template-columns: 1fr; }
     .tiles { grid-template-columns: repeat(2, 1fr); }
-    .session { display: none; }
+    input, select, textarea { font-size: 16px; } /* stops iOS zooming in on focus */
+    .composer { padding: 10px 12px max(12px, env(safe-area-inset-bottom)); }
+    .g-top { top: 8px; left: 8px; right: 8px; }
+    .g-title { max-width: none; flex: 1; min-width: 0; }
+    .legend { left: 8px; right: 8px; bottom: 8px; border-radius: var(--radius); gap: 4px 12px; }
+    .inspector { left: 8px; right: 8px; bottom: 8px; width: auto; max-height: 60%; }
+  }
+  @media (max-width: 600px) {
+    .topbar { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; }
+    .spacer { display: none; }
+    .brand { margin: 0; grid-area: 1 / 1; }
+    .status { min-width: 0; margin: 0; grid-area: 1 / 2; justify-content: flex-end; } .status #statusText { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #addRepoBtn { display: inline-flex; grid-area: 1 / 3; }
+    #ghLink { grid-area: 1 / 4; }
+    .topbar > label.field { grid-area: 2 / 1 / 3 / -1; }
+    .topbar > label.field select { flex: 1; width: 100%; }
+    #ingestForm { grid-area: 3 / 1 / 4 / -1; display: none; }
+    body.adding #ingestForm { display: flex; }
+    .review-bar { padding: 12px; }
+    .review-bar .btn.primary { flex: 1; justify-content: center; }
+    .prs button { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; }
+    .prs button .muted { grid-column: 2; margin: 0 !important; font-size: 12px; }
+  }
+  @media (max-width: 420px) {
+    .tabs button .i { display: none; }
+    .tabs button { font-size: 13px; }
+    .brand small { display: none; }
+    .g-tools .btn { width: 30px; padding: 0; justify-content: center; font-size: 0; gap: 0; }
   }
 </style>
 </head>
@@ -252,6 +305,8 @@
   <span class="status" id="status" role="status"><span class="dot" id="statusDot"></span><span id="statusText">Connecting…</span></span>
   <span class="spacer"></span>
   <span class="session">Session <code id="sess"></code><button class="btn sm" id="newSession" title="Fresh chat. Long-term memory stays in the graph.">New session</button></span>
+  <button class="btn icon" id="addRepoBtn" type="button" aria-label="Add a GitHub repo" aria-expanded="false" aria-controls="ingestForm"></button>
+  <a class="btn icon" id="ghLink" href="https://github.com/SanidhyaDhangar/repobrain" target="_blank" rel="noopener" aria-label="RepoBrain source on GitHub" title="Source on GitHub"></a>
 </header>
 
 <main class="layout">
@@ -260,6 +315,7 @@
       <button role="tab" aria-selected="true" aria-controls="chat" data-tab="chat" id="tab-chat"></button>
       <button role="tab" aria-selected="false" aria-controls="review" data-tab="review" id="tab-review"></button>
       <button role="tab" aria-selected="false" aria-controls="memory" data-tab="memory" id="tab-memory"></button>
+      <button role="tab" aria-selected="false" aria-controls="graphPanel" data-tab="graph" id="tab-graph"></button>
       <span class="tab-ink" id="ink"></span>
     </nav>
 
@@ -290,7 +346,7 @@
     </div>
   </section>
 
-  <section class="graph-panel" aria-label="Knowledge graph">
+  <section class="graph-panel" id="graphPanel" aria-label="Knowledge graph">
     <div id="graph"></div>
     <div class="g-top">
       <div class="g-title" id="graphTitle">Graph</div>
@@ -329,6 +385,7 @@ const P = {
   copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>',
   ext: '<path d="M14 3h7v7"/><path d="M10 14 21 3"/><path d="M21 14v7H3V3h7"/>',
   x: '<path d="M18 6 6 18M6 6l12 12"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
   alert: '<path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>',
   chat: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
   pr: '<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="18" r="3"/><path d="M6 9v6M18 15V9a3 3 0 0 0-3-3h-4"/><path d="m13 3-2 3 2 3"/>',
@@ -339,6 +396,9 @@ const LOGO = '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M9 10 22 8 16
 $('#tab-chat').innerHTML = icon('chat') + 'Ask';
 $('#tab-review').innerHTML = icon('pr') + 'PR review';
 $('#tab-memory').innerHTML = icon('recall') + 'Memory';
+$('#tab-graph').innerHTML = icon('graph') + 'Graph';
+$('#addRepoBtn').innerHTML = icon('plus');
+$('#ghLink').innerHTML = '<svg class="i" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .3a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2.1c-3.3.7-4-1.6-4-1.6-.6-1.4-1.4-1.8-1.4-1.8-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.7-.3-5.5-1.3-5.5-6 0-1.2.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0c2.3-1.5 3.3-1.2 3.3-1.2.7 1.7.3 2.9.1 3.2.8.8 1.2 1.9 1.2 3.1 0 4.6-2.8 5.6-5.5 5.9.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .3"/></svg>';
 $('#sendBtn').innerHTML = icon('send');
 $('#fitBtn').innerHTML = icon('fit') + 'Fit';
 $('#overviewBtn').innerHTML = icon('graph') + 'Overview';
@@ -374,12 +434,17 @@ async function stream(path, body, on) {
 // ---------- graph ----------
 const COLORS = { Function: '#60a5fa', File: '#94a3b8', PR: '#f59e0b', Issue: '#f43f5e', Person: '#34d399', Fact: '#a78bfa', Episode: '#64748b', Task: '#fb923c', Note: '#e2e8f0' };
 const SIZE = { Person: 15, PR: 11, Issue: 11, Function: 9, File: 10, Fact: 12, Episode: 8, Task: 13, Note: 8 };
+const FONT = { Person: 15, PR: 12, Issue: 12, Fact: 12, Task: 12 };
+const NARROW = matchMedia('(max-width: 860px)'), HOVER = matchMedia('(hover: hover)');
+const narrow = () => NARROW.matches;
 const nodes = new vis.DataSet(), edges = new vis.DataSet();
 const network = new vis.Network($('#graph'), { nodes, edges }, {
   groups: Object.fromEntries(Object.entries(COLORS).map(([k, c]) => [k, {
     color: { background: c, border: c, highlight: { background: '#fff', border: c }, hover: { background: c, border: '#fff' } },
-    size: SIZE[k], shadow: { enabled: true, color: c + '66', size: 14, x: 0, y: 0 } }])),
-  nodes: { shape: 'dot', borderWidth: 2, font: { color: '#c9ced8', size: 11, face: 'Inter', strokeWidth: 4, strokeColor: '#08090b' } },
+    size: SIZE[k], font: { size: FONT[k] || 10 }, shadow: { enabled: true, color: c + '66', size: 14, x: 0, y: 0 } }])),
+  // labels fade out when zoomed far out (hover still shows the name), so big overviews stay readable
+  nodes: { shape: 'dot', borderWidth: 2, font: { color: '#c9ced8', size: 11, face: 'Inter', strokeWidth: 4, strokeColor: '#08090b' },
+           scaling: { label: { drawThreshold: 7 } } },
   edges: { width: 1, selectionWidth: 1.5, arrows: { to: { enabled: true, scaleFactor: .45 } }, color: { color: '#2a303a', highlight: '#2dd4bf', hover: '#4b5563' },
            font: { size: 9, color: '#6f7785', face: 'Inter', strokeWidth: 0, align: 'middle' }, smooth: { type: 'continuous' } },
   physics: { solver: 'forceAtlas2Based', forceAtlas2Based: { gravitationalConstant: -55, springLength: 95, springConstant: .06, avoidOverlap: .5 },
@@ -394,21 +459,26 @@ function legend() {
 }
 const QUIET = new Set(['CALLS', 'DEFINES', 'IMPORTS']);
 const tidy = es => es.map(e => QUIET.has(e.label) ? { ...e, label: undefined, title: e.label } : e);
+const titled = ns => ns.map(n => ({ ...n, title: `${n.group}: ${n.name}` }));
 function fit() { network.fit({ animation: { duration: 650, easingFunction: 'easeInOutCubic' } }); }
+// Physics keeps spreading nodes after the first fit, so fit again once it settles (unless the user picked a node).
+const settle = () => network.once('stabilized', () => network.getSelectedNodes().length || fit());
 function show(g, title) {
   closeInspector(); nodes.clear(); edges.clear();
-  nodes.add(g.nodes); edges.add(tidy(g.edges));
+  const deg = {}; g.edges.forEach(e => { deg[e.from] = (deg[e.from] || 0) + 1; deg[e.to] = (deg[e.to] || 0) + 1; });
+  // hubs get a bigger dot and a label that stays readable when zoomed out
+  nodes.add(titled(g.nodes).map(n => deg[n.id] >= 6 ? { ...n, size: SIZE[n.group] + 5, font: { size: 15 } } : n)); edges.add(tidy(g.edges));
   setTitle(`${title} <span class="muted">· ${g.nodes.length} nodes · ${g.edges.length} edges</span>`);
-  legend(); setTimeout(fit, 350);
+  legend(); network.stabilize(250); settle(); // lay out before the first fit, so big graphs land in view
 }
 // Grow the graph in place: new nodes flash so you can watch the agent explore.
 function grow(g) {
   const fresh = g.nodes.filter(n => !nodes.get(n.id));
-  nodes.update(g.nodes); edges.update(tidy(g.edges.filter(e => !edges.get(e.id))));
+  nodes.update(titled(g.nodes)); edges.update(tidy(g.edges.filter(e => !edges.get(e.id))));
   fresh.forEach(n => nodes.update({ id: n.id, borderWidth: 5, color: { border: '#ffffff' } }));
   setTimeout(() => fresh.forEach(n => nodes.get(n.id) && nodes.update({ id: n.id, borderWidth: 2, color: { border: COLORS[n.group] } })), 900);
   legend();
-  if (fresh.length) setTimeout(fit, 250);
+  if (fresh.length) { setTimeout(fit, 250); settle(); if (narrow() && activeTab !== 'graph') $('#tab-graph').classList.add('new'); }
 }
 function spotlight(id) {
   const keep = new Set([id, ...network.getConnectedNodes(id)]);
@@ -476,6 +546,11 @@ function md(text) {
     if (!m) return;
     a.removeAttribute('title'); a.className = 'cite';
     a.addEventListener('mouseenter', () => { const n = findNode(m[1], m[2]); if (n) focusNode(n.id); });
+    // touch has no hover: a tap jumps to the node instead (the inspector still links to GitHub)
+    a.addEventListener('click', e => {
+      const n = !HOVER.matches && findNode(m[1], m[2]);
+      if (n) { e.preventDefault(); if (narrow()) selectTab('graph'); focusNode(n.id); }
+    });
   });
   return div;
 }
@@ -529,10 +604,15 @@ $('#repo').onchange = e => { $('#log').innerHTML = ''; selectRepo(e.target.value
 $('#ingestForm').onsubmit = async e => {
   e.preventDefault();
   const btn = e.target.querySelector('button'); btn.disabled = true;
-  try { const r = await api('/api/ingest', { repo: $('#newRepo').value }); $('#newRepo').value = ''; await selectRepo(r.repo); }
+  try { const r = await api('/api/ingest', { repo: $('#newRepo').value }); $('#newRepo').value = ''; toggleAdd(false); await selectRepo(r.repo); }
   catch (err) { toast(err.message); }
   btn.disabled = false;
 };
+function toggleAdd(on = !document.body.classList.contains('adding')) {
+  document.body.classList.toggle('adding', on); $('#addRepoBtn').setAttribute('aria-expanded', on);
+  if (on) $('#newRepo').focus();
+}
+$('#addRepoBtn').onclick = () => toggleAdd();
 
 // ---------- session ----------
 const makeSession = () => 's-' + Math.random().toString(36).slice(2, 8);
@@ -545,19 +625,21 @@ $('#newSession').onclick = newSession;
 let activeTab = 'chat';
 function moveInk() { const b = $(`#tab-${activeTab}`), ink = $('#ink'); ink.style.width = b.offsetWidth - 16 + 'px'; ink.style.transform = `translateX(${b.offsetLeft + 8}px)`; }
 function selectTab(t) {
-  activeTab = t;
+  activeTab = t; document.body.dataset.tab = t;
   document.querySelectorAll('.tabs [role=tab]').forEach(b => b.setAttribute('aria-selected', b.dataset.tab === t));
   document.querySelectorAll('.pane').forEach(p => p.hidden = p.id !== t);
   moveInk();
+  if (t === 'graph') { $('#tab-graph').classList.remove('new'); network.setSize('100%', '100%'); network.redraw(); if (!network.getSelectedNodes().length) fit(); }
   if (t === 'memory') loadMemory();
   if (t === 'review') loadPrs();
 }
 document.querySelector('.tabs').onclick = e => { const b = e.target.closest('[role=tab]'); if (b) selectTab(b.dataset.tab); };
 document.querySelector('.tabs').onkeydown = e => {
-  const order = ['chat', 'review', 'memory'], i = order.indexOf(activeTab);
-  if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { const t = order[(i + (e.key === 'ArrowRight' ? 1 : 2)) % 3]; selectTab(t); $(`#tab-${t}`).focus(); }
+  const order = [...document.querySelectorAll('.tabs [role=tab]')].filter(b => b.offsetParent).map(b => b.dataset.tab), i = order.indexOf(activeTab);
+  if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { const t = order[(i + (e.key === 'ArrowRight' ? 1 : order.length - 1)) % order.length]; selectTab(t); $(`#tab-${t}`).focus(); }
 };
 addEventListener('resize', moveInk);
+NARROW.addEventListener('change', () => narrow() || activeTab !== 'graph' ? moveInk() : selectTab('chat'));
 
 // ---------- chat ----------
 const SUGGEST = [
@@ -603,10 +685,12 @@ async function ask(q) {
       } else if (ev.type === 'done') {
         m.querySelector('.thinking').remove();
         m.append(md(ev.answer));
+        const g = ev.graph, title = `<b>Evidence:</b> ${esc(q.slice(0, 60))}`;
+        m.insertAdjacentHTML('beforeend', `<div class="answer-actions"><button type="button" class="btn sm">${icon('graph')}Evidence graph · ${g.nodes.length} nodes</button></div>`);
+        m.querySelector('.answer-actions button').onclick = () => { show(g, title); if (narrow()) selectTab('graph'); };
         m.insertAdjacentHTML('beforeend', cypherDetails(ev.steps));
         m.querySelector('.meta').textContent = `${ev.steps.length} queries · ${(ev.tokens / 1000).toFixed(1)}k tokens · ${((performance.now() - t0) / 1000).toFixed(1)}s`;
-        const g = ev.graph, title = `<b>Evidence:</b> ${esc(q.slice(0, 60))}`;
-        m.onclick = e => { if (!e.target.closest('a, details')) show(g, title); };
+        m.onclick = e => { if (!e.target.closest('a, details, button')) show(g, title); };
         grow(g); setTitle(`${title} <span class="muted">· ${g.nodes.length} nodes</span>`);
       } else if (ev.type === 'error') throw new Error(ev.detail);
     });
@@ -695,7 +779,7 @@ async function loadMemory() {
     out.querySelectorAll('.about button').forEach(b => b.onclick = () => {
       const a = b.dataset.a, n = a.startsWith('@') ? findNode('Person', a.slice(1)) : a.startsWith('#') ? (findNode('PR', a.slice(1)) || findNode('Issue', a.slice(1)))
         : nodes.get({ filter: x => x.name === a || x.props?.path === a })[0];
-      if (n) focusNode(n.id);
+      if (n) { if (narrow()) selectTab('graph'); focusNode(n.id); }
     });
   } catch (e) { out.innerHTML = `<p style="color:var(--bad)">${esc(e.message)}</p>`; }
 }
