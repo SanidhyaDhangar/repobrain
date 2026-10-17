@@ -246,7 +246,7 @@
     .brand { order: 0; } .status { order: 1; margin-left: auto; } #ghLink { order: 1; }
     .spacer { order: 2; flex-basis: 100%; height: 0; } /* line break: fields go on row 2 */
     .topbar > label.field { order: 3; } #ingestForm { order: 4; flex: 2 1 240px; }
-    .layout { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+    .layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); } /* minmax: long chips can't widen the page */
     .left { display: contents; }
     .tabs { grid-row: 1; background: var(--panel); padding: 4px 8px 0; }
     .tabs button { flex: 1; justify-content: center; padding: 8px 4px 10px; white-space: nowrap; }
@@ -448,7 +448,7 @@ const network = new vis.Network($('#graph'), { nodes, edges }, {
   edges: { width: 1, selectionWidth: 1.5, arrows: { to: { enabled: true, scaleFactor: .45 } }, color: { color: '#2a303a', highlight: '#2dd4bf', hover: '#4b5563' },
            font: { size: 9, color: '#6f7785', face: 'Inter', strokeWidth: 0, align: 'middle' }, smooth: { type: 'continuous' } },
   physics: { solver: 'forceAtlas2Based', forceAtlas2Based: { gravitationalConstant: -55, springLength: 95, springConstant: .06, avoidOverlap: .5 },
-             stabilization: { iterations: 120, fit: true }, minVelocity: .8, maxVelocity: 35 },
+             stabilization: { iterations: 120, fit: false }, minVelocity: .8, maxVelocity: 35 },
   interaction: { hover: true, tooltipDelay: 300, hideEdgesOnDrag: true },
 });
 let graphTitle = '';
@@ -460,7 +460,8 @@ function legend() {
 const QUIET = new Set(['CALLS', 'DEFINES', 'IMPORTS']);
 const tidy = es => es.map(e => QUIET.has(e.label) ? { ...e, label: undefined, title: e.label } : e);
 const titled = ns => ns.map(n => ({ ...n, title: `${n.group}: ${n.name}` }));
-function fit() { network.fit({ animation: { duration: 650, easingFunction: 'easeInOutCubic' } }); }
+// Animated fits replace each other, so the last one wins; a hidden (zero-width) graph can't be fitted.
+function fit() { if ($('#graph').clientWidth) network.fit({ animation: { duration: 650, easingFunction: 'easeInOutCubic' } }); }
 // Physics keeps spreading nodes after the first fit, so fit again once it settles (unless the user picked a node).
 const settle = () => network.once('stabilized', () => network.getSelectedNodes().length || fit());
 function show(g, title) {
@@ -469,7 +470,9 @@ function show(g, title) {
   // hubs get a bigger dot and a label that stays readable when zoomed out
   nodes.add(titled(g.nodes).map(n => deg[n.id] >= 6 ? { ...n, size: SIZE[n.group] + 5, font: { size: 15 } } : n)); edges.add(tidy(g.edges));
   setTitle(`${title} <span class="muted">· ${g.nodes.length} nodes · ${g.edges.length} edges</span>`);
-  legend(); network.stabilize(250); settle(); // lay out before the first fit, so big graphs land in view
+  legend();
+  // lay out first, then fit: a fit computed before layout sees every node at the origin
+  network.once('stabilizationIterationsDone', () => { fit(); settle(); }); network.stabilize(250);
 }
 // Grow the graph in place: new nodes flash so you can watch the agent explore.
 function grow(g) {
@@ -687,7 +690,7 @@ async function ask(q) {
         m.append(md(ev.answer));
         const g = ev.graph, title = `<b>Evidence:</b> ${esc(q.slice(0, 60))}`;
         m.insertAdjacentHTML('beforeend', `<div class="answer-actions"><button type="button" class="btn sm">${icon('graph')}Evidence graph · ${g.nodes.length} nodes</button></div>`);
-        m.querySelector('.answer-actions button').onclick = () => { show(g, title); if (narrow()) selectTab('graph'); };
+        m.querySelector('.answer-actions button').onclick = () => { if (narrow()) selectTab('graph'); show(g, title); };
         m.insertAdjacentHTML('beforeend', cypherDetails(ev.steps));
         m.querySelector('.meta').textContent = `${ev.steps.length} queries · ${(ev.tokens / 1000).toFixed(1)}k tokens · ${((performance.now() - t0) / 1000).toFixed(1)}s`;
         m.onclick = e => { if (!e.target.closest('a, details, button')) show(g, title); };
