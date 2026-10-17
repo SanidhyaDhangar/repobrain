@@ -191,7 +191,8 @@ def run_review(req: ReviewReq, emit=None):
         if emit:
             emit({"type": "changed", "title": pr.json()["title"], "changed": changed, "files": paths})
         results = agent.review_pr(repo, req.pr, pr.json()["title"], pr.json()["body"], changed, paths, emit=emit)
-        comment = results["reviewer"]["answer"]
+        # a zero-width space after "@" keeps names readable but stops GitHub notifying people who never asked to review
+        comment = re.sub(r"(?<![\w`])@(?=[A-Za-z0-9])", "@\u200b", results["reviewer"]["answer"])
         posted = None
         if req.post:
             body = f"{comment}\n\n---\n<sub>RepoBrain: impact, historian and reviewer agents reasoning over a FalkorDB graph of this repo.</sub>"

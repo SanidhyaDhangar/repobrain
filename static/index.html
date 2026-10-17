@@ -538,7 +538,7 @@ function cite(md) {
       const kind = /^i/i.test(k) ? 'Issue' : 'PR';
       return `[${m.replace(/\s+/, ' ')}](${base}/${kind === 'PR' ? 'pull' : 'issues'}/${n} "cite:${kind}:${n}")`;
     })
-    .replace(/(?<![\w.\/@`-])@([A-Za-z0-9][A-Za-z0-9-]{0,38})\b/g, (m, u) => `[@${u}](https://github.com/${u} "cite:Person:${u}")`);
+    .replace(/(?<![\w.\/@`-])@\u200b?([A-Za-z0-9][A-Za-z0-9-]{0,38})\b/g, (m, u) => `[@${u}](https://github.com/${u} "cite:Person:${u}")`);
 }
 function md(text) {
   const div = document.createElement('div'); div.className = 'answer';
