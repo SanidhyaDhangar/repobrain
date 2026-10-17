@@ -6,6 +6,8 @@ Every team has one person who just *knows*. Ask them "can I change this function
 
 AI coding agents don't have that walk. They see the file in front of them, maybe a vector search hit or two, and they forget everything when the session ends. So we built **RepoBrain**: point it at any public GitHub repo and it builds a knowledge graph in FalkorDB. Agents answer questions and review PRs by traversing that graph, and every answer shows the path it took.
 
+![RepoBrain answering "What breaks if I change full_dispatch_request?": live graph-tool chips on the left, the evidence subgraph on the right](https://raw.githubusercontent.com/SanidhyaDhangar/repobrain/main/docs/img/desktop.jpg)
+
 ## The graph
 
 One ingest turns a repo into four connected layers:
