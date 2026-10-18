@@ -6,6 +6,8 @@ Point RepoBrain at any public GitHub repo. It builds one FalkorDB graph from the
 
 **Live demo:** https://repobrain-j9c4.onrender.com (free tier: the first request after idle takes about a minute to wake up)
 
+**Demo video:** https://youtu.be/vztPZL29JSs
+
 ![RepoBrain answering "What breaks if I change full_dispatch_request, and who should review it?" with the live trace of graph tools on the left and the evidence subgraph on the right](docs/img/desktop.jpg)
 
 *Each chip is a Cypher tool call the agent made. The graph grows as it explores, and hovering a cited PR or person focuses that node. On phones the graph becomes its own tab:*
